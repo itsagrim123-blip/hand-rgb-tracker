@@ -26,10 +26,10 @@ const state = {
   glitchIntensity: .1, powerCooldown: 0, closeHandsAt: 0, previousHandDistance: 0,
 };
 let landmarker, lastVideoTime = -1, lastDetectAt = 0;
-let lastFrameAt = performance.now(), fpsClock = lastFrameAt, frameCount = 0;
+let lastFrameAt = performance.now(), fpsClock = lastFrameAt, frameCount = 0, detectionClock = lastFrameAt, detectionFrames = 0;
 
 function makeHandState(label, color) {
-  return { label, color, points: [], targetPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, gesture: 'NONE', previousGesture: 'NONE', pinching: false, pinchFrames: 0, releaseFrames: 0, pinchDistance: 1, visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
+  return { label, color, points: [], rawPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, confidence: 0, gesture: 'NONE', candidateGesture: 'NONE', candidateFrames: 0, previousGesture: 'NONE', pinching: false, pinchFrames: 0, releaseFrames: 0, pinchDistance: 1, rawPinchDistance: 1, visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
 }
 function setNotice(title, detail, error = false) {
   notice.classList.toggle('error', error); notice.classList.remove('hidden');
@@ -80,14 +80,14 @@ function canvasPoint(landmark) {
   const screenRatio = innerWidth / innerHeight;
   if (videoRatio > screenRatio) {
     const shownWidth = innerHeight * videoRatio;
-    return { x: (innerWidth - shownWidth) / 2 + (1 - landmark.x) * shownWidth, y: landmark.y * innerHeight };
+    return { x: (innerWidth - shownWidth) / 2 + (1 - landmark.x) * shownWidth, y: landmark.y * innerHeight, z: landmark.z * shownWidth };
   }
   const shownHeight = innerWidth / videoRatio;
-  return { x: (1 - landmark.x) * innerWidth, y: (innerHeight - shownHeight) / 2 + landmark.y * shownHeight };
+  return { x: (1 - landmark.x) * innerWidth, y: (innerHeight - shownHeight) / 2 + landmark.y * shownHeight, z: landmark.z * shownHeight };
 }
 function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 function palmCenter(points) {
-  return [0, 5, 9, 13, 17].reduce((sum, index) => ({ x: sum.x + points[index].x / 5, y: sum.y + points[index].y / 5 }), { x: 0, y: 0 });
+  return [0, 5, 9, 13, 17].reduce((sum, index) => ({ x: sum.x + points[index].x / 5, y: sum.y + points[index].y / 5, z: sum.z + (points[index].z || 0) / 5 }), { x: 0, y: 0, z: 0 });
 }
 function detectGesture(points) {
   const wrist = points[0], palmSize = Math.max(distance(wrist, points[9]), 1);
@@ -101,6 +101,15 @@ function classifyHand(classification, fallbackX) {
   // Only used if a classification is unexpectedly absent; this is not array-index based.
   return fallbackX < innerWidth / 2 ? 'left' : 'right';
 }
+function chooseStableIdentity(modelKey, confidence, points, seen) {
+  const nextPalm = palmCenter(points);
+  // The MediaPipe label is primary. At low confidence, continuity prevents a brief label flip from swapping hands.
+  if (confidence < .72 && state.left.palm && state.right.palm) {
+    const nearest = distance(nextPalm, state.left.palm) <= distance(nextPalm, state.right.palm) ? 'left' : 'right';
+    if (!seen.has(nearest)) return nearest;
+  }
+  return seen.has(modelKey) ? (modelKey === 'left' ? 'right' : 'left') : modelKey;
+}
 function processHands(result, now) {
   const seen = new Set();
   const handedness = result.handednesses || result.handedness || [];
@@ -109,18 +118,21 @@ function processHands(result, now) {
   (result.landmarks || []).forEach((landmarks, index) => {
     const points = landmarks.map(canvasPoint);
     // Use MediaPipe's per-result label; never infer left/right from array order.
-    let key = classifyHand(handedness[index], points[8].x);
-    // Avoid overwriting one physical hand if MediaPipe momentarily reports duplicate handedness.
-    if (seen.has(key)) key = key === 'left' ? 'right' : 'left';
+    const confidence = handedness[index]?.[0]?.score ?? 0;
+    let key = chooseStableIdentity(classifyHand(handedness[index], points[8].x), confidence, points, seen);
     seen.add(key);
     const hand = state[key];
-    hand.targetPoints = points; hand.targetPalm = palmCenter(points); hand.visible = true; hand.lastSeen = now;
-    hand.pinchDistance = Math.hypot(landmarks[4].x - landmarks[8].x, landmarks[4].y - landmarks[8].y, landmarks[4].z - landmarks[8].z);
+    hand.rawPoints = points; hand.targetPalm = palmCenter(points); hand.visible = true; hand.lastSeen = now; hand.confidence = confidence;
+    hand.rawPinchDistance = Math.hypot(landmarks[4].x - landmarks[8].x, landmarks[4].y - landmarks[8].y, landmarks[4].z - landmarks[8].z);
+    hand.pinchDistance = lerp(hand.pinchDistance, hand.rawPinchDistance, .32);
     const wasPinching = hand.pinching;
     if (!hand.pinching && hand.pinchDistance < .055) { hand.pinchFrames++; hand.releaseFrames = 0; if (hand.pinchFrames >= 2) hand.pinching = true; }
     else if (hand.pinching && hand.pinchDistance > .075) { hand.releaseFrames++; hand.pinchFrames = 0; if (hand.releaseFrames >= 2) hand.pinching = false; }
     else { hand.pinchFrames = 0; hand.releaseFrames = 0; }
-    hand.previousGesture = hand.gesture; hand.gesture = hand.pinching ? 'PINCH' : detectGesture(points);
+    const observedGesture = hand.pinching ? 'PINCH' : detectGesture(points);
+    if (observedGesture === hand.candidateGesture) hand.candidateFrames++; else { hand.candidateGesture = observedGesture; hand.candidateFrames = 1; }
+    hand.previousGesture = hand.gesture;
+    if (hand.candidateFrames >= 3) hand.gesture = hand.candidateGesture;
     if (hand.pinching && !wasPinching) beginGrab(hand, points[8]);
     if (!hand.pinching && wasPinching) releaseGrab(hand);
     state.detectedHands.push({ order: index + 1, label: hand.label, index: { ...points[8] } });
@@ -128,25 +140,32 @@ function processHands(result, now) {
   ['left', 'right'].forEach(key => { if (!seen.has(key)) state[key].visible = false; });
 }
 function smoothHands(dt, now) {
-  const follow = 1 - Math.pow(.003, dt);
   for (const hand of [state.left, state.right]) {
     const fresh = now - hand.lastSeen < 450;
-    hand.intensity = lerp(hand.intensity, fresh && hand.targetPoints.length ? 1 : 0, follow);
+    const fade = 1 - Math.pow(.003, dt);
+    hand.intensity = lerp(hand.intensity, fresh && hand.rawPoints.length ? 1 : 0, fade);
     if (!fresh) hand.pinching = false;
-    if (!hand.targetPoints.length) continue;
-    if (!hand.points.length) hand.points = hand.targetPoints.map(p => ({ ...p }));
-    else hand.points.forEach((p, i) => { p.x = lerp(p.x, hand.targetPoints[i].x, follow); p.y = lerp(p.y, hand.targetPoints[i].y, follow); });
-    hand.palm = hand.palm ? { x: lerp(hand.palm.x, hand.targetPalm.x, follow), y: lerp(hand.palm.y, hand.targetPalm.y, follow) } : { ...hand.targetPalm };
+    if (!hand.rawPoints.length) continue;
+    if (!hand.points.length) hand.points = hand.rawPoints.map(p => ({ ...p }));
+    else hand.points.forEach((p, i) => {
+      const target = hand.rawPoints[i], speed = Math.hypot(target.x - p.x, target.y - p.y) / Math.max(dt, .001);
+      // Adaptive low-pass: removes tremor at rest while allowing fast deliberate movements through.
+      const alpha = clamp(.13 + speed / 1900 * .29, .13, .42);
+      p.x = lerp(p.x, target.x, alpha); p.y = lerp(p.y, target.y, alpha); p.z = lerp(p.z || 0, target.z || 0, alpha);
+    });
+    const rawPalm = palmCenter(hand.points);
+    hand.palm = hand.palm ? { x: lerp(hand.palm.x, rawPalm.x, .24), y: lerp(hand.palm.y, rawPalm.y, .24), z: lerp(hand.palm.z || 0, rawPalm.z || 0, .24) } : { ...rawPalm };
     if (hand.previousPalm) {
       hand.velocity.x = (hand.palm.x - hand.previousPalm.x) / Math.max(dt, .001);
       hand.velocity.y = (hand.palm.y - hand.previousPalm.y) / Math.max(dt, .001);
       hand.velocity.speed = Math.hypot(hand.velocity.x, hand.velocity.y);
     }
     hand.previousPalm = { ...hand.palm };
-    hand.rotation = Math.atan2(hand.points[8].y - hand.points[0].y, hand.points[8].x - hand.points[0].x);
+    const rawRotation = Math.atan2(hand.points[9].y - hand.points[0].y, hand.points[9].x - hand.points[0].x);
+    hand.rotation = hand.rotation ? lerpAngle(hand.rotation, rawRotation, .22) : rawRotation;
     hand.trail.unshift({ ...hand.palm, life: 1 }); hand.trail = hand.trail.slice(0, 22); hand.trail.forEach(point => point.life -= dt * 2.2);
     hand.trail = hand.trail.filter(point => point.life > 0);
-    if (hand.anchorLock) hand.anchorLock = { x: lerp(hand.anchorLock.x, hand.targetPoints[8].x, .035), y: lerp(hand.anchorLock.y, hand.targetPoints[8].y, .035) };
+    if (hand.anchorLock) hand.anchorLock = { x: lerp(hand.anchorLock.x, hand.rawPoints[8].x, .035), y: lerp(hand.anchorLock.y, hand.rawPoints[8].y, .035) };
   }
 }
 function handAnchor(hand) { return hand.anchorLock || hand.points[8]; }
@@ -259,7 +278,10 @@ function renderDualField(now) {
 function renderHandSkeleton(hand) {
   if (hand.intensity < .025 || !hand.points.length) return;
   ctx.save(); ctx.globalAlpha = hand.intensity * .45; ctx.strokeStyle = hand.color; ctx.fillStyle = hand.color; ctx.lineWidth = 1;
-  if (state.debug) { HAND_CONNECTIONS.forEach(chain => { ctx.beginPath(); chain.forEach((id, i) => i ? ctx.lineTo(hand.points[id].x, hand.points[id].y) : ctx.moveTo(hand.points[id].x, hand.points[id].y)); ctx.stroke(); }); hand.points.forEach((p, id) => { ctx.globalAlpha = hand.intensity * .55; ctx.beginPath(); ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2); ctx.fill(); }); }
+  if (state.debug) {
+    ctx.strokeStyle = hand.color; HAND_CONNECTIONS.forEach(chain => { ctx.beginPath(); chain.forEach((id, i) => i ? ctx.lineTo(hand.points[id].x, hand.points[id].y) : ctx.moveTo(hand.points[id].x, hand.points[id].y)); ctx.stroke(); }); hand.points.forEach((p, id) => { ctx.globalAlpha = hand.intensity * .55; ctx.beginPath(); ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2); ctx.fill(); });
+    ctx.fillStyle = '#ff6edb'; hand.rawPoints.forEach(p => { ctx.globalAlpha = .32; ctx.beginPath(); ctx.arc(p.x, p.y, 1, 0, Math.PI * 2); ctx.fill(); });
+  }
   [4, 8].forEach(id => { const p = hand.points[id]; ctx.globalAlpha = hand.intensity * .8; ctx.beginPath(); ctx.arc(p.x, p.y, id === 8 ? 4 : 3, 0, Math.PI * 2); ctx.fill(); });
   if (state.debug) { ctx.globalAlpha = .9; ctx.font = '10px "Share Tech Mono", monospace'; hand.points.forEach((p, id) => ctx.fillText(id, p.x + 5, p.y - 5)); ctx.fillText(`${hand.label} ${hand.gesture}`, hand.points[8].x + 10, hand.points[8].y + 18); }
   ctx.restore();
@@ -323,15 +345,15 @@ function renderDebugReadout() {
   const p = state.panel, lines = [
     'DEBUG // TWO-HAND TRANSFORM',
     `DETECTED HANDS: ${state.detectedCount}`,
+    `RENDER FPS: ${fpsElement.textContent}  DETECT FPS: ${state.detectionFps || 0}`,
     `PANEL: ${Math.round(p.width)} x ${Math.round(p.height)} PX`,
     `ROTATION: ${Math.round((p.angle * 180 / Math.PI + 360) % 360)} DEG`,
     `DISTANCE: ${Math.round(p.distance)} PX`,
     `OBJECTS: ${state.objects.length}  PARTICLES: ${state.particles.length}`,
-    `FPS: ${fpsElement.textContent}`,
   ];
   state.detectedHands.forEach(hand => lines.push(`HAND ${hand.order}: ${hand.label}`));
   for (const hand of [state.left, state.right]) {
-    if (hand.points.length && hand.intensity > .06) lines.push(`${hand.label} INDEX: ${Math.round(hand.points[8].x)}, ${Math.round(hand.points[8].y)}  V:${Math.round(hand.velocity.speed)}  PINCH:${Math.round(distance(hand.points[4], hand.points[8]))}`);
+    if (hand.points.length && hand.intensity > .06) lines.push(`${hand.label} PALM: ${Math.round(hand.palm.x)},${Math.round(hand.palm.y)} V:${Math.round(hand.velocity.speed)} C:${hand.confidence.toFixed(2)}`, `${hand.label} PINCH: ${hand.pinchDistance.toFixed(3)} INDEX: ${Math.round(hand.points[8].x)},${Math.round(hand.points[8].y)}`);
   }
   ctx.save(); ctx.fillStyle = '#affff8'; ctx.globalAlpha = .9; ctx.font = '11px "Share Tech Mono", monospace';
   const width = 255, x = innerWidth - width - 22, y = 26;
@@ -353,6 +375,7 @@ function loop(now) {
     // Temporary diagnostic: confirms MediaPipe is returning 0, 1, or 2 real detections.
     if (state.debug) console.log("Detected hands:", result.landmarks.length);
     processHands(result, now);
+    detectionFrames++; if (now - detectionClock > 700) { state.detectionFps = Math.round(detectionFrames * 1000 / (now - detectionClock)); detectionClock = now; detectionFrames = 0; }
   }
   render(now); requestAnimationFrame(loop);
 }
