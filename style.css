@@ -14,7 +14,7 @@ body { margin: 0; overflow: hidden; background: #070813; }
 #hands-status, #link-status, #mode-status, #gesture-status, #object-status, #velocity-status, #energy-status { color: #ff66ca; }
 #debug-toggle { position: absolute; z-index: 3; right: 22px; bottom: 20px; border: 1px solid rgba(255, 85, 211, .58); color: #ffb3e7; background: rgba(11, 4, 20, .66); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; }
 #debug-toggle:hover { color: #fff; box-shadow: 0 0 18px rgba(255, 46, 196, .42); }
-.shield-toggle { position: absolute; z-index: 3; top: 20px; right: 22px; border: 1px solid rgba(255, 184, 66, .52); color: #ffd58a; background: rgba(17, 10, 3, .56); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.shield-toggle { position: fixed; z-index: 20; top: 20px; right: 22px; display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border: 1px solid rgba(255, 184, 66, .78); color: #ffd58a; background: rgba(17, 10, 3, .82); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; pointer-events: auto; box-shadow: 0 0 16px rgba(255, 153, 37, .16); transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
 .shield-toggle span { color: #ff8d4c; }
 .shield-toggle.active { border-color: rgba(255, 220, 127, .95); background: rgba(63, 31, 5, .62); box-shadow: 0 0 18px rgba(255, 153, 37, .25); }
 .shield-toggle.active span { color: #fff0b3; }
