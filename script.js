@@ -29,7 +29,7 @@ let landmarker, lastVideoTime = -1, lastDetectAt = 0;
 let lastFrameAt = performance.now(), fpsClock = lastFrameAt, frameCount = 0;
 
 function makeHandState(label, color) {
-  return { label, color, points: [], targetPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, gesture: 'NONE', previousGesture: 'NONE', visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
+  return { label, color, points: [], targetPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, gesture: 'NONE', previousGesture: 'NONE', pinching: false, pinchFrames: 0, releaseFrames: 0, pinchDistance: 1, visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
 }
 function setNotice(title, detail, error = false) {
   notice.classList.toggle('error', error); notice.classList.remove('hidden');
@@ -91,7 +91,6 @@ function palmCenter(points) {
 }
 function detectGesture(points) {
   const wrist = points[0], palmSize = Math.max(distance(wrist, points[9]), 1);
-  if (distance(points[4], points[8]) / palmSize < .52) return 'PINCH';
   const extended = [8, 12, 16, 20].filter(i => distance(points[i], wrist) / palmSize > 1.7).length;
   return extended >= 4 ? 'OPEN' : extended <= 1 ? 'FIST' : 'HAND';
 }
@@ -116,13 +115,14 @@ function processHands(result, now) {
     seen.add(key);
     const hand = state[key];
     hand.targetPoints = points; hand.targetPalm = palmCenter(points); hand.visible = true; hand.lastSeen = now;
-    hand.previousGesture = hand.gesture; hand.gesture = detectGesture(points);
-    if (hand.gesture === 'PINCH' && hand.previousGesture !== 'PINCH') hand.anchorLock = { ...points[8] };
-    if (hand.gesture !== 'PINCH') hand.anchorLock = null;
-    if (hand.gesture === 'PINCH' && hand.previousGesture !== 'PINCH') beginGrab(hand, points[8]);
-    if (hand.gesture !== 'PINCH' && hand.previousGesture === 'PINCH') releaseGrab(hand);
-    if (hand.gesture === 'FIST' && hand.previousGesture !== 'FIST') triggerFist(hand, points[8], true);
-    if (hand.gesture === 'OPEN' && hand.previousGesture === 'FIST') triggerFist(hand, points[8], false);
+    hand.pinchDistance = Math.hypot(landmarks[4].x - landmarks[8].x, landmarks[4].y - landmarks[8].y, landmarks[4].z - landmarks[8].z);
+    const wasPinching = hand.pinching;
+    if (!hand.pinching && hand.pinchDistance < .055) { hand.pinchFrames++; hand.releaseFrames = 0; if (hand.pinchFrames >= 2) hand.pinching = true; }
+    else if (hand.pinching && hand.pinchDistance > .075) { hand.releaseFrames++; hand.pinchFrames = 0; if (hand.releaseFrames >= 2) hand.pinching = false; }
+    else { hand.pinchFrames = 0; hand.releaseFrames = 0; }
+    hand.previousGesture = hand.gesture; hand.gesture = hand.pinching ? 'PINCH' : detectGesture(points);
+    if (hand.pinching && !wasPinching) beginGrab(hand, points[8]);
+    if (!hand.pinching && wasPinching) releaseGrab(hand);
     state.detectedHands.push({ order: index + 1, label: hand.label, index: { ...points[8] } });
   });
   ['left', 'right'].forEach(key => { if (!seen.has(key)) state[key].visible = false; });
@@ -132,6 +132,7 @@ function smoothHands(dt, now) {
   for (const hand of [state.left, state.right]) {
     const fresh = now - hand.lastSeen < 450;
     hand.intensity = lerp(hand.intensity, fresh && hand.targetPoints.length ? 1 : 0, follow);
+    if (!fresh) hand.pinching = false;
     if (!hand.targetPoints.length) continue;
     if (!hand.points.length) hand.points = hand.targetPoints.map(p => ({ ...p }));
     else hand.points.forEach((p, i) => { p.x = lerp(p.x, hand.targetPoints[i].x, follow); p.y = lerp(p.y, hand.targetPoints[i].y, follow); });
@@ -174,7 +175,7 @@ function calculatePanelTransform(dt, now) {
     target = { x: (anchor.x + wrist.x) / 2, y: (anchor.y + wrist.y) / 2, width: size, height: size / PANEL_ASPECT, angle: Math.abs(handAxis) < .14 ? 0 : clamp(handAxis, -.42, .42), intensity: hand.intensity, mode: 'ONE HAND', distance: d };
   }
   const bothPinching = active.length === 2 && left.gesture === 'PINCH' && right.gesture === 'PINCH';
-  if (bothPinching && !state.bothPinching) { panel.burst = 1; emitBurst(panel.x, panel.y, 44); }
+  if (bothPinching && !state.bothPinching) panel.burst = 0;
   state.bothPinching = bothPinching;
   if (active.length === 2 && left.gesture === 'OPEN' && right.gesture === 'OPEN') target.mode = 'DUAL CONTROL';
   if (bothPinching) { target.width *= .87; target.height *= .87; target.mode = 'CONTROL MODE'; }
@@ -189,46 +190,62 @@ function emitBurst(x, y, count) {
   for (let i = 0; i < count; i++) { const angle = Math.random() * Math.PI * 2, speed = 70 + Math.random() * 280; state.particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: .5 + Math.random() * .7, maxLife: 1, color: i % 2 ? '#ff35c8' : '#37f7ff' }); }
 }
 function makeObject(x, y, owner) {
-  const kinds = ['CUBE', 'RING', 'SPHERE', 'PANEL'];
-  return { type: kinds[Math.floor(Math.random() * kinds.length)], x, y, vx: 0, vy: 0, angle: 0, rotationVelocity: (Math.random() - .5) * 1.8, scale: .75, targetScale: .75, opacity: 1, owner, dual: false, idle: 0 };
+  const kinds = ['CUBE', 'RING', 'SPHERE'];
+  return { type: kinds[Math.floor(Math.random() * kinds.length)], x, y, vx: 0, vy: 0, angle: 0, rotationVelocity: (Math.random() - .5) * .8, scale: .8, targetScale: .8, opacity: .82, grabbedBy: owner ? [owner] : [], dual: false, idle: 0 };
+}
+function seedObjects() {
+  if (state.objects.length) return;
+  const centerX = innerWidth / 2, centerY = innerHeight / 2;
+  state.objects.push(
+    { ...makeObject(centerX - 120, centerY - 25), type: 'CUBE', scale: .9, targetScale: .9 },
+    { ...makeObject(centerX + 105, centerY + 55), type: 'SPHERE', scale: .75, targetScale: .75 },
+    { ...makeObject(centerX + 10, centerY - 135), type: 'RING', scale: .65, targetScale: .65 },
+  );
 }
 function beginGrab(hand, point) {
-  let object = state.objects.find(item => item.owner === hand.label || distance(item, point) < 70);
-  if (!object) { object = makeObject(point.x, point.y, hand.label); state.objects.push(object); }
-  object.owner = hand.label; object.idle = 0; state.glitchIntensity = Math.max(state.glitchIntensity, .5);
+  const candidate = state.objects.filter(item => item.grabbedBy.includes(hand.label) || distance(item, point) < 92).sort((a, b) => distance(a, point) - distance(b, point))[0];
+  if (!candidate) return; // A pinch only grabs a real nearby object; it never creates a virtual one.
+  if (!candidate.grabbedBy.includes(hand.label)) candidate.grabbedBy.push(hand.label);
+  candidate.idle = 0; state.glitchIntensity = Math.max(state.glitchIntensity, .24);
 }
 function releaseGrab(hand) {
-  state.objects.filter(item => item.owner === hand.label).forEach(item => { item.owner = null; item.dual = false; item.vx = hand.velocity.x * .42; item.vy = hand.velocity.y * .42; item.rotationVelocity += hand.velocity.speed * .001; item.idle = 1; });
+  state.objects.filter(item => item.grabbedBy.includes(hand.label)).forEach(item => { item.grabbedBy = item.grabbedBy.filter(label => label !== hand.label); item.dual = false; if (!item.grabbedBy.length) { item.vx = hand.velocity.x * .42; item.vy = hand.velocity.y * .42; item.rotationVelocity += hand.velocity.speed * .001; item.idle = 1; } });
 }
 function triggerFist(hand, point, compression) {
   state.shockwaves.push({ x: point.x, y: point.y, radius: compression ? 12 : 4, life: 1, compression }); emitBurst(point.x, point.y, compression ? 16 : 25); state.glitchIntensity = Math.max(state.glitchIntensity, compression ? .8 : 1);
 }
 function updateObjects(dt) {
   const left = state.left, right = state.right;
-  const pinching = [left, right].filter(hand => hand.intensity > .1 && hand.gesture === 'PINCH');
-  let dualObject = pinching.length === 2 ? state.objects.find(item => item.owner === left.label || item.owner === right.label) : null;
+  state.objects.forEach(item => { item.grabbedBy = item.grabbedBy.filter(label => { const hand = label === 'LEFT' ? left : right; return hand.pinching && hand.intensity > .1; }); });
+  let dualObject = state.objects.find(item => item.grabbedBy.includes(left.label) && item.grabbedBy.includes(right.label));
   if (dualObject) {
     const a = handAnchor(left), b = handAnchor(right), d = distance(a, b); dualObject.dual = true; dualObject.owner = 'DUAL'; dualObject.x = lerp(dualObject.x, (a.x + b.x) / 2, .3); dualObject.y = lerp(dualObject.y, (a.y + b.y) / 2, .3); dualObject.targetScale = clamp(d / 180, .35, 2.8); dualObject.angle = lerpAngle(dualObject.angle, Math.atan2(b.y - a.y, b.x - a.x), .2);
   }
   state.objects.forEach(item => {
-    if (item.owner === left.label && left.gesture === 'PINCH') { const p = handAnchor(left); item.x = lerp(item.x, p.x, .32); item.y = lerp(item.y, p.y, .32); item.vx = left.velocity.x * .16; item.vy = left.velocity.y * .16; }
-    if (item.owner === right.label && right.gesture === 'PINCH') { const p = handAnchor(right); item.x = lerp(item.x, p.x, .32); item.y = lerp(item.y, p.y, .32); item.vx = right.velocity.x * .16; item.vy = right.velocity.y * .16; }
-    if (!item.owner) { item.x += item.vx * dt; item.y += item.vy * dt; item.vx *= .985; item.vy *= .985; item.idle -= dt; }
-    item.scale = lerp(item.scale, item.targetScale, .1); item.angle += item.rotationVelocity * dt;
+    const grabber = item.grabbedBy.length === 1 ? (item.grabbedBy[0] === 'LEFT' ? left : right) : null;
+    if (grabber && (!grabber.pinching || grabber.intensity < .1)) item.grabbedBy = [];
+    if (grabber?.pinching) { const p = handAnchor(grabber); item.x = lerp(item.x, p.x, .28); item.y = lerp(item.y, p.y, .28); item.vx = grabber.velocity.x * .14; item.vy = grabber.velocity.y * .14; item.targetScale = .92; }
+    else if (!item.grabbedBy.length) { item.x += item.vx * dt; item.y += item.vy * dt; item.vx *= .983; item.vy *= .983; item.idle -= dt; item.targetScale = .8; }
+    item.scale = lerp(item.scale, item.targetScale, .1); item.angle += item.rotationVelocity * dt; item.opacity = lerp(item.opacity, item.grabbedBy.length ? 1 : .78, .08);
   });
-  state.objects = state.objects.slice(-7);
+  state.objects = state.objects.slice(-6);
 }
 function drawHolographicObject(item) {
-  const size = 42 * item.scale; ctx.save(); ctx.translate(item.x, item.y); ctx.rotate(item.angle); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = item.opacity * .8; ctx.strokeStyle = '#50ffff'; ctx.fillStyle = '#ff41d1'; ctx.shadowBlur = 16; ctx.shadowColor = '#00efff'; ctx.lineWidth = 1.4;
-  if (item.type === 'CUBE') { ctx.strokeRect(-size / 2, -size / 2, size, size); ctx.strokeRect(-size / 2 + size*.22, -size / 2 - size*.22, size, size); [[-1,-1],[1,-1],[1,1],[-1,1]].forEach(([x,y]) => { ctx.beginPath(); ctx.moveTo(x*size/2,y*size/2); ctx.lineTo(x*size/2+size*.22,y*size/2-size*.22); ctx.stroke(); }); }
-  else if (item.type === 'RING') { ctx.beginPath(); ctx.ellipse(0,0,size,size*.34,0,0,Math.PI*2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0,0,size*.65,size*.23,Math.PI/2,0,Math.PI*2); ctx.stroke(); }
-  else if (item.type === 'SPHERE') { ctx.beginPath(); ctx.arc(0,0,size*.65,0,Math.PI*2); ctx.stroke(); [-.5,0,.5].forEach(n => { ctx.beginPath(); ctx.ellipse(0,n*size*.34,size*.65,size*.18,0,0,Math.PI*2); ctx.stroke(); }); }
-  else { ctx.strokeRect(-size, -size*.56, size*2, size*1.12); ctx.beginPath(); ctx.moveTo(-size*.75,0); ctx.lineTo(size*.75,0); ctx.stroke(); }
+  const size = 42 * item.scale; ctx.save(); ctx.translate(item.x, item.y); ctx.rotate(item.angle); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = item.opacity * .8; ctx.strokeStyle = '#b9ffff'; ctx.fillStyle = '#39e8ff'; ctx.shadowBlur = item.grabbedBy.length ? 23 : 12; ctx.shadowColor = '#00efff'; ctx.lineWidth = 1.4;
+  if (item.type === 'CUBE') drawCube(size); else if (item.type === 'RING') drawRing(size); else drawSphere(size);
   ctx.restore();
+}
+function drawCube(size) { ctx.strokeRect(-size/2,-size/2,size,size); ctx.strokeRect(-size/2+size*.22,-size/2-size*.22,size,size); [[-1,-1],[1,-1],[1,1],[-1,1]].forEach(([x,y])=>{ctx.beginPath();ctx.moveTo(x*size/2,y*size/2);ctx.lineTo(x*size/2+size*.22,y*size/2-size*.22);ctx.stroke();}); }
+function drawRing(size) { ctx.beginPath();ctx.ellipse(0,0,size,size*.34,0,0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.ellipse(0,0,size*.65,size*.23,Math.PI/2,0,Math.PI*2);ctx.stroke(); }
+function drawSphere(size) { ctx.beginPath();ctx.arc(0,0,size*.65,0,Math.PI*2);ctx.stroke();[-.5,0,.5].forEach(n=>{ctx.beginPath();ctx.ellipse(0,n*size*.34,size*.65,size*.18,0,0,Math.PI*2);ctx.stroke();}); }
+function renderGrabTethers() {
+  ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.strokeStyle = '#7ffff4'; ctx.lineWidth = 1; ctx.globalAlpha = .42;
+  state.objects.forEach(item => item.grabbedBy.forEach(label => { const hand = label === 'LEFT' ? state.left : state.right; if (!hand.points.length) return; const p = hand.points[8]; ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(item.x,item.y); ctx.stroke(); })); ctx.restore();
 }
 function renderEnergyConnection(now) {
   const { left, right } = state;
-  if (!['TWO HANDS', 'CONTROL MODE', 'DUAL CONTROL'].includes(state.panel.mode)) return;
+  const sharedObject = state.objects.find(item => item.grabbedBy.includes(left.label) && item.grabbedBy.includes(right.label));
+  if (!sharedObject) return;
   const a = handAnchor(left), b = handAnchor(right); ctx.save(); ctx.globalCompositeOperation = 'screen';
   const gradient = ctx.createLinearGradient(a.x, a.y, b.x, b.y); gradient.addColorStop(0, left.color); gradient.addColorStop(.5, '#edfff9'); gradient.addColorStop(1, right.color);
   ctx.strokeStyle = gradient; ctx.globalAlpha = .75 + state.panel.burst * .25; ctx.shadowBlur = 15 + state.panel.burst * 20; ctx.shadowColor = '#22ecff'; ctx.lineWidth = 1.1 + clamp((distance(a, b) - 90) / 220, 0, 3.2); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
@@ -241,9 +258,9 @@ function renderDualField(now) {
 }
 function renderHandSkeleton(hand) {
   if (hand.intensity < .025 || !hand.points.length) return;
-  ctx.save(); ctx.globalAlpha = hand.intensity * .7; ctx.strokeStyle = hand.color; ctx.fillStyle = hand.color; ctx.lineWidth = 1;
-  HAND_CONNECTIONS.forEach(chain => { ctx.beginPath(); chain.forEach((id, i) => i ? ctx.lineTo(hand.points[id].x, hand.points[id].y) : ctx.moveTo(hand.points[id].x, hand.points[id].y)); ctx.stroke(); });
-  hand.points.forEach((p, id) => { ctx.globalAlpha = hand.intensity * (id === 8 ? 1 : .55); ctx.beginPath(); ctx.arc(p.x, p.y, id === 8 ? 5 : 1.7, 0, Math.PI * 2); ctx.fill(); });
+  ctx.save(); ctx.globalAlpha = hand.intensity * .45; ctx.strokeStyle = hand.color; ctx.fillStyle = hand.color; ctx.lineWidth = 1;
+  if (state.debug) { HAND_CONNECTIONS.forEach(chain => { ctx.beginPath(); chain.forEach((id, i) => i ? ctx.lineTo(hand.points[id].x, hand.points[id].y) : ctx.moveTo(hand.points[id].x, hand.points[id].y)); ctx.stroke(); }); hand.points.forEach((p, id) => { ctx.globalAlpha = hand.intensity * .55; ctx.beginPath(); ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2); ctx.fill(); }); }
+  [4, 8].forEach(id => { const p = hand.points[id]; ctx.globalAlpha = hand.intensity * .8; ctx.beginPath(); ctx.arc(p.x, p.y, id === 8 ? 4 : 3, 0, Math.PI * 2); ctx.fill(); });
   if (state.debug) { ctx.globalAlpha = .9; ctx.font = '10px "Share Tech Mono", monospace'; hand.points.forEach((p, id) => ctx.fillText(id, p.x + 5, p.y - 5)); ctx.fillText(`${hand.label} ${hand.gesture}`, hand.points[8].x + 10, hand.points[8].y + 18); }
   ctx.restore();
 }
@@ -294,7 +311,8 @@ function updateParticles(dt) {
 function updateHUD() {
   const visible = [state.left, state.right].filter(hand => hand.intensity > .12).length;
   const link = state.detectedCount >= 2 ? 'DUAL' : state.detectedCount === 1 ? 'SINGLE' : 'NONE';
-  handsStatus.textContent = `${state.detectedCount} / 2`; linkStatus.textContent = link; modeStatus.textContent = state.panel.mode;
+  const grabbed = state.objects.filter(item => item.grabbedBy.length);
+  handsStatus.textContent = `${state.detectedCount} / 2`; linkStatus.textContent = link; modeStatus.textContent = grabbed.some(item => item.grabbedBy.length === 2) ? 'DUAL OBJECT' : grabbed.length ? 'OBJECT' : 'NORMAL';
   const gestures = [state.left, state.right].filter(h => h.intensity > .12).map(h => `${h.label[0]}:${h.gesture}`).join(' ') || 'NONE'; gestureStatus.textContent = gestures;
   const activeObject = state.objects.at(-1); objectStatus.textContent = activeObject?.type || 'NONE';
   const velocity = Math.max(state.left.velocity.speed, state.right.velocity.speed); velocityStatus.textContent = `${Math.round(velocity)} PX/S`;
@@ -323,9 +341,9 @@ function renderDebugReadout() {
 }
 function render(now) {
   const dt = Math.min(.08, (now - lastFrameAt) / 1000); lastFrameAt = now; ctx.clearRect(0, 0, innerWidth, innerHeight);
-  smoothHands(dt, now); calculatePanelTransform(dt, now); detectPowerMove(now); updateObjects(dt);
+  smoothHands(dt, now); calculatePanelTransform(dt, now); updateObjects(dt);
   const motion = Math.max(state.left.velocity.speed, state.right.velocity.speed); state.glitchIntensity = lerp(state.glitchIntensity, clamp(.1 + motion / 4000 + (state.bothPinching ? .35 : 0), .1, .85), .06);
-  renderDualField(now); renderEnergyConnection(now); renderRGBPanel(now); state.objects.forEach(drawHolographicObject); renderPalmInterface(state.left, now); renderPalmInterface(state.right, now); renderHandTrail(state.left); renderHandTrail(state.right); renderHandSkeleton(state.left); renderHandSkeleton(state.right); emitFingerParticles(state.left, dt); emitFingerParticles(state.right, dt); renderShockwaves(dt); updateParticles(dt); updateHUD(); renderDebugReadout();
+  renderEnergyConnection(now); state.objects.forEach(drawHolographicObject); renderGrabTethers(); renderHandSkeleton(state.left); renderHandSkeleton(state.right); updateParticles(dt); updateHUD(); renderDebugReadout();
   frameCount++; if (now - fpsClock > 700) { fpsElement.textContent = String(Math.round(frameCount * 1000 / (now - fpsClock))); fpsClock = now; frameCount = 0; }
 }
 function loop(now) {
@@ -344,6 +362,7 @@ addEventListener('keydown', event => { if (event.key.toLowerCase() === 'd' && !e
 addEventListener('resize', resize);
 
 resize();
+seedObjects();
 await Promise.all([initializeCamera(), initializeHandTracking()]);
 if (video.srcObject && landmarker) hideNotice();
 requestAnimationFrame(loop);
