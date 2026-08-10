@@ -6,6 +6,7 @@ const ctx = canvas.getContext('2d');
 const cameraStatus = document.querySelector('#camera-status');
 const visionStatus = document.querySelector('#vision-status');
 const handsStatus = document.querySelector('#hands-status');
+const linkStatus = document.querySelector('#link-status');
 const modeStatus = document.querySelector('#mode-status');
 const gestureStatus = document.querySelector('#gesture-status');
 const fpsElement = document.querySelector('#fps');
@@ -18,7 +19,7 @@ const state = {
   left: makeHandState('LEFT', '#ff54c8'),
   right: makeHandState('RIGHT', '#44f5ff'),
   panel: { x: innerWidth / 2, y: innerHeight / 2, width: 250, height: 155, angle: 0, intensity: 0, mode: 'SEARCHING', distance: 0, burst: 0 },
-  particles: [], debug: false, bothPinching: false,
+  particles: [], debug: false, bothPinching: false, detectedHands: [], detectedCount: 0,
 };
 let landmarker, lastVideoTime = -1, lastDetectAt = 0;
 let lastFrameAt = performance.now(), fpsClock = lastFrameAt, frameCount = 0;
@@ -59,7 +60,8 @@ async function initializeHandTracking() {
     const fileset = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
     landmarker = await HandLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: 'GPU' },
-      runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: .55, minHandPresenceConfidence: .5, minTrackingConfidence: .5,
+      // The Tasks Vision Hand Landmarker supports up to two independently detected real hands.
+      runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: .4, minHandPresenceConfidence: .4, minTrackingConfidence: .4,
     });
     visionStatus.textContent = 'ACTIVE'; if (video.srcObject) hideNotice();
   } catch (error) {
@@ -98,9 +100,13 @@ function classifyHand(classification, fallbackX) {
 }
 function processHands(result, now) {
   const seen = new Set();
+  const handedness = result.handednesses || result.handedness || [];
+  state.detectedCount = result.landmarks?.length || 0;
+  state.detectedHands = [];
   (result.landmarks || []).forEach((landmarks, index) => {
     const points = landmarks.map(canvasPoint);
-    let key = classifyHand(result.handedness?.[index], points[8].x);
+    // Use MediaPipe's per-result label; never infer left/right from array order.
+    let key = classifyHand(handedness[index], points[8].x);
     // Avoid overwriting one physical hand if MediaPipe momentarily reports duplicate handedness.
     if (seen.has(key)) key = key === 'left' ? 'right' : 'left';
     seen.add(key);
@@ -109,6 +115,7 @@ function processHands(result, now) {
     hand.previousGesture = hand.gesture; hand.gesture = detectGesture(points);
     if (hand.gesture === 'PINCH' && hand.previousGesture !== 'PINCH') hand.anchorLock = { ...points[8] };
     if (hand.gesture !== 'PINCH') hand.anchorLock = null;
+    state.detectedHands.push({ order: index + 1, label: hand.label, index: { ...points[8] } });
   });
   ['left', 'right'].forEach(key => { if (!seen.has(key)) state[key].visible = false; });
 }
@@ -193,7 +200,8 @@ function renderRGBPanel(now) {
   ctx.globalAlpha = p.intensity; ctx.shadowBlur = 18; ctx.shadowColor = '#42ffff'; ctx.strokeStyle = '#d8ffff'; ctx.lineWidth = 1.2; ctx.strokeRect(-p.width / 2, -p.height / 2, p.width, p.height); ctx.shadowBlur = 0;
   // Canvas HUD content stays physically attached to the panel's position, scale, and rotation.
   const fontSize = Math.max(8, Math.min(14, p.width / 22)); ctx.fillStyle = '#d5ffff'; ctx.font = `${fontSize}px "Share Tech Mono", monospace`; ctx.globalAlpha = p.intensity * .9;
-  ctx.fillText('VISION OBJECT // HOLOGRAM', -p.width * .4, -p.height * .28); ctx.fillText(`HAND LINK: ${p.mode === 'TWO HANDS' || p.mode === 'CONTROL MODE' ? 'ACTIVE' : 'SINGLE'}`, -p.width * .4, -p.height * .08); ctx.fillText(`DISTANCE: ${Math.round(p.distance)} PX`, -p.width * .4, p.height * .12); ctx.fillText(`ROTATION: ${Math.round((p.angle * 180 / Math.PI + 360) % 360)} DEG`, -p.width * .4, p.height * .27);
+  const link = state.detectedCount >= 2 ? 'DUAL' : state.detectedCount === 1 ? 'SINGLE' : 'NONE';
+  ctx.fillText('VISION OBJECT // HOLOGRAM', -p.width * .4, -p.height * .28); ctx.fillText(`HAND LINK: ${link}`, -p.width * .4, -p.height * .08); ctx.fillText(`DISTANCE: ${Math.round(p.distance)} PX`, -p.width * .4, p.height * .12); ctx.fillText(`ROTATION: ${Math.round((p.angle * 180 / Math.PI + 360) % 360)} DEG`, -p.width * .4, p.height * .27);
   ctx.strokeStyle = '#81fff0'; ctx.globalAlpha = p.intensity * .65; ctx.beginPath(); ctx.moveTo(-p.width * .4, p.height * .37); ctx.lineTo(p.width * .4, p.height * .37); ctx.moveTo(-p.width * .4, -p.height * .35); ctx.lineTo(-p.width * .4, p.height * .37); ctx.stroke(); ctx.restore();
 }
 function updateParticles(dt) {
@@ -202,18 +210,21 @@ function updateParticles(dt) {
 }
 function updateHUD() {
   const visible = [state.left, state.right].filter(hand => hand.intensity > .12).length;
-  handsStatus.textContent = `${visible} / 2`; modeStatus.textContent = state.panel.mode;
+  const link = state.detectedCount >= 2 ? 'DUAL' : state.detectedCount === 1 ? 'SINGLE' : 'NONE';
+  handsStatus.textContent = `${state.detectedCount} / 2`; linkStatus.textContent = link; modeStatus.textContent = state.panel.mode;
   const gestures = [state.left, state.right].filter(h => h.intensity > .12).map(h => `${h.label[0]}:${h.gesture}`).join(' ') || 'NONE'; gestureStatus.textContent = gestures;
 }
 function renderDebugReadout() {
   if (!state.debug) return;
   const p = state.panel, lines = [
     'DEBUG // TWO-HAND TRANSFORM',
+    `DETECTED HANDS: ${state.detectedCount}`,
     `PANEL: ${Math.round(p.width)} x ${Math.round(p.height)} PX`,
     `ROTATION: ${Math.round((p.angle * 180 / Math.PI + 360) % 360)} DEG`,
     `DISTANCE: ${Math.round(p.distance)} PX`,
     `FPS: ${fpsElement.textContent}`,
   ];
+  state.detectedHands.forEach(hand => lines.push(`HAND ${hand.order}: ${hand.label}`));
   for (const hand of [state.left, state.right]) {
     if (hand.points.length && hand.intensity > .06) lines.push(`${hand.label} INDEX: ${Math.round(hand.points[8].x)}, ${Math.round(hand.points[8].y)}`);
   }
@@ -229,7 +240,13 @@ function render(now) {
   frameCount++; if (now - fpsClock > 700) { fpsElement.textContent = String(Math.round(frameCount * 1000 / (now - fpsClock))); fpsClock = now; frameCount = 0; }
 }
 function loop(now) {
-  if (landmarker && video.readyState >= 2 && now - lastDetectAt > 30 && video.currentTime !== lastVideoTime) { lastDetectAt = now; lastVideoTime = video.currentTime; processHands(landmarker.detectForVideo(video, now), now); }
+  if (landmarker && video.readyState >= 2 && now - lastDetectAt > 30 && video.currentTime !== lastVideoTime) {
+    lastDetectAt = now; lastVideoTime = video.currentTime;
+    const result = landmarker.detectForVideo(video, now);
+    // Temporary diagnostic: confirms MediaPipe is returning 0, 1, or 2 real detections.
+    console.log("Detected hands:", result.landmarks.length);
+    processHands(result, now);
+  }
   render(now); requestAnimationFrame(loop);
 }
 function toggleDebug() { state.debug = !state.debug; debugButton.textContent = `DEBUG: ${state.debug ? 'ON' : 'OFF'} [D]`; }
