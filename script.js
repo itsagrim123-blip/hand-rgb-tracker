@@ -15,6 +15,7 @@ const energyStatus = document.querySelector('#energy-status');
 const fpsElement = document.querySelector('#fps');
 const notice = document.querySelector('#notice');
 const debugButton = document.querySelector('#debug-toggle');
+const shieldButton = document.querySelector('#shield-toggle');
 
 const HAND_CONNECTIONS = [[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],[0,13,14,15,16],[0,17,18,19,20],[5,9,13,17,0]];
 const PANEL_ASPECT = 16 / 9;
@@ -23,13 +24,13 @@ const state = {
   right: makeHandState('RIGHT', '#44f5ff'),
   panel: { x: innerWidth / 2, y: innerHeight / 2, width: 250, height: 155, angle: 0, intensity: 0, mode: 'SEARCHING', distance: 0, burst: 0 },
   particles: [], objects: [], shockwaves: [], debug: false, bothPinching: false, detectedHands: [], detectedCount: 0,
-  glitchIntensity: .1, powerCooldown: 0, closeHandsAt: 0, previousHandDistance: 0,
+  glitchIntensity: .1, powerCooldown: 0, closeHandsAt: 0, previousHandDistance: 0, magicShield: false, shieldPinchLatch: false,
 };
 let landmarker, lastVideoTime = -1, lastDetectAt = 0;
 let lastFrameAt = performance.now(), fpsClock = lastFrameAt, frameCount = 0, detectionClock = lastFrameAt, detectionFrames = 0;
 
 function makeHandState(label, color) {
-  return { label, color, points: [], rawPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, confidence: 0, gesture: 'NONE', candidateGesture: 'NONE', candidateFrames: 0, previousGesture: 'NONE', pinching: false, pinchFrames: 0, releaseFrames: 0, pinchDistance: 1, rawPinchDistance: 1, visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
+  return { label, color, points: [], rawPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, shieldScale: 0, confidence: 0, gesture: 'NONE', candidateGesture: 'NONE', candidateFrames: 0, previousGesture: 'NONE', pinching: false, pinchFrames: 0, releaseFrames: 0, pinchDistance: 1, rawPinchDistance: 1, visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
 }
 function setNotice(title, detail, error = false) {
   notice.classList.toggle('error', error); notice.classList.remove('hidden');
@@ -261,6 +262,33 @@ function renderGrabTethers() {
   ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.strokeStyle = '#7ffff4'; ctx.lineWidth = 1; ctx.globalAlpha = .42;
   state.objects.forEach(item => item.grabbedBy.forEach(label => { const hand = label === 'LEFT' ? state.left : state.right; if (!hand.points.length) return; const p = hand.points[8]; ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(item.x,item.y); ctx.stroke(); })); ctx.restore();
 }
+function setMagicShield(enabled) {
+  state.magicShield = enabled; shieldButton.classList.toggle('active', enabled); shieldButton.setAttribute('aria-pressed', String(enabled)); shieldButton.querySelector('span').textContent = enabled ? 'ON' : 'OFF';
+}
+function updateShieldButton() {
+  const rect = shieldButton.getBoundingClientRect();
+  let hovering = false, pinching = false, anyPinching = false;
+  for (const hand of [state.left, state.right]) {
+    if (hand.intensity < .15 || !hand.points.length) continue;
+    anyPinching ||= hand.pinching;
+    const index = hand.points[8];
+    if (index.x >= rect.left && index.x <= rect.right && index.y >= rect.top && index.y <= rect.bottom) { hovering = true; if (hand.pinching) pinching = true; }
+  }
+  shieldButton.classList.toggle('hand-hover', hovering);
+  if (hovering && pinching && !state.shieldPinchLatch) { setMagicShield(!state.magicShield); state.shieldPinchLatch = true; }
+  if (!anyPinching) state.shieldPinchLatch = false;
+}
+function renderMagicShield(hand, now) {
+  if (!state.magicShield || hand.intensity < .08 || !hand.palm || !hand.points.length) return;
+  const handSize = distance(hand.points[0], hand.points[9]);
+  hand.shieldScale = lerp(hand.shieldScale || handSize * 1.45, clamp(handSize * 1.48, 42, 125), .16);
+  const r = hand.shieldScale, spin = now * .0011;
+  ctx.save(); ctx.translate(hand.palm.x, hand.palm.y); ctx.rotate(hand.rotation); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = hand.intensity * .74; ctx.strokeStyle = '#ffbf58'; ctx.shadowColor = '#ff9c32'; ctx.shadowBlur = 15; ctx.lineWidth = 1.15;
+  // Transparent-center procedural ward: only strokes, gaps, and small radial marks are drawn.
+  [1, .78, .54].forEach((scale, index) => { ctx.save(); ctx.rotate((index % 2 ? -1 : 1) * spin * (index + 1)); ctx.beginPath(); for (let i = 0; i < 12; i++) { const a = i * Math.PI * 2 / 12; ctx.moveTo(Math.cos(a) * r * scale, Math.sin(a) * r * scale); ctx.arc(0, 0, r * scale, a + .06, a + .38, false); } ctx.stroke(); ctx.restore(); });
+  ctx.shadowBlur = 6; for (let i = 0; i < 10; i++) { const a = i * Math.PI * 2 / 10 + spin * .35, inner = r * .58, outer = r * .94; ctx.beginPath(); ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner); ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer); ctx.stroke(); ctx.beginPath(); ctx.arc(Math.cos(a) * r * .94, Math.sin(a) * r * .94, 1.6, 0, Math.PI * 2); ctx.fillStyle = '#ffe4a0'; ctx.fill(); }
+  ctx.globalAlpha = hand.intensity * .45; for (let i = 0; i < 7; i++) { const a = spin * 2 + i * .9; ctx.fillStyle = '#ffcb72'; ctx.beginPath(); ctx.arc(Math.cos(a) * r * .68, Math.sin(a) * r * .68, 1.2, 0, Math.PI * 2); ctx.fill(); } ctx.restore();
+}
 function renderEnergyConnection(now) {
   const { left, right } = state;
   const sharedObject = state.objects.find(item => item.grabbedBy.includes(left.label) && item.grabbedBy.includes(right.label));
@@ -365,7 +393,7 @@ function render(now) {
   const dt = Math.min(.08, (now - lastFrameAt) / 1000); lastFrameAt = now; ctx.clearRect(0, 0, innerWidth, innerHeight);
   smoothHands(dt, now); calculatePanelTransform(dt, now); updateObjects(dt);
   const motion = Math.max(state.left.velocity.speed, state.right.velocity.speed); state.glitchIntensity = lerp(state.glitchIntensity, clamp(.1 + motion / 4000 + (state.bothPinching ? .35 : 0), .1, .85), .06);
-  renderEnergyConnection(now); state.objects.forEach(drawHolographicObject); renderGrabTethers(); renderHandSkeleton(state.left); renderHandSkeleton(state.right); updateParticles(dt); updateHUD(); renderDebugReadout();
+  updateShieldButton(); renderEnergyConnection(now); state.objects.forEach(drawHolographicObject); renderGrabTethers(); renderMagicShield(state.left, now); renderMagicShield(state.right, now); renderHandSkeleton(state.left); renderHandSkeleton(state.right); updateParticles(dt); updateHUD(); renderDebugReadout();
   frameCount++; if (now - fpsClock > 700) { fpsElement.textContent = String(Math.round(frameCount * 1000 / (now - fpsClock))); fpsClock = now; frameCount = 0; }
 }
 function loop(now) {
@@ -381,6 +409,7 @@ function loop(now) {
 }
 function toggleDebug() { state.debug = !state.debug; debugButton.textContent = `DEBUG: ${state.debug ? 'ON' : 'OFF'} [D]`; }
 debugButton.addEventListener('click', toggleDebug);
+shieldButton.addEventListener('click', () => setMagicShield(!state.magicShield));
 addEventListener('keydown', event => { if (event.key.toLowerCase() === 'd' && !event.repeat) toggleDebug(); });
 addEventListener('resize', resize);
 

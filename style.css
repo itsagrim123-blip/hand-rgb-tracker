@@ -14,6 +14,11 @@ body { margin: 0; overflow: hidden; background: #070813; }
 #hands-status, #link-status, #mode-status, #gesture-status, #object-status, #velocity-status, #energy-status { color: #ff66ca; }
 #debug-toggle { position: absolute; z-index: 3; right: 22px; bottom: 20px; border: 1px solid rgba(255, 85, 211, .58); color: #ffb3e7; background: rgba(11, 4, 20, .66); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; }
 #debug-toggle:hover { color: #fff; box-shadow: 0 0 18px rgba(255, 46, 196, .42); }
+.shield-toggle { position: absolute; z-index: 3; top: 20px; right: 22px; border: 1px solid rgba(255, 184, 66, .52); color: #ffd58a; background: rgba(17, 10, 3, .56); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.shield-toggle span { color: #ff8d4c; }
+.shield-toggle.active { border-color: rgba(255, 220, 127, .95); background: rgba(63, 31, 5, .62); box-shadow: 0 0 18px rgba(255, 153, 37, .25); }
+.shield-toggle.active span { color: #fff0b3; }
+.shield-toggle.hand-hover { border-color: #fff1b0; box-shadow: 0 0 25px rgba(255, 169, 48, .6); }
 .notice { position: absolute; z-index: 4; left: 50%; top: 50%; width: min(410px, calc(100vw - 40px)); transform: translate(-50%, -50%); padding: 20px 24px; border: 1px solid rgba(49, 234, 255, .5); background: rgba(5, 7, 20, .84); text-align: center; box-shadow: 0 0 45px rgba(0, 212, 255, .18); transition: opacity .45s ease, visibility .45s ease; }
 .notice strong { display: block; color: #70fff4; font-size: 14px; font-weight: normal; letter-spacing: .12em; }
 .notice span { display: block; margin-top: 10px; color: #a7b3c9; font-size: 12px; line-height: 1.45; }
