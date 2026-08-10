@@ -13,6 +13,7 @@ const notice = document.querySelector('#notice');
 const debugButton = document.querySelector('#debug-toggle');
 
 const HAND_CONNECTIONS = [[0,1,2,3,4],[0,5,6,7,8],[0,9,10,11,12],[0,13,14,15,16],[0,17,18,19,20],[5,9,13,17,0]];
+const PANEL_ASPECT = 16 / 9;
 const state = {
   left: makeHandState('LEFT', '#ff54c8'),
   right: makeHandState('RIGHT', '#44f5ff'),
@@ -37,6 +38,7 @@ function resize() {
 }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpAngle(a, b, t) { return a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t; }
+function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 
 async function initializeCamera() {
   cameraStatus.textContent = 'REQUESTING';
@@ -129,11 +131,23 @@ function calculatePanelTransform(dt, now) {
   const panel = state.panel;
   let target = { x: panel.x, y: panel.y, width: panel.width, height: panel.height, angle: panel.angle, intensity: 0, mode: 'SEARCHING', distance: 0 };
   if (active.length === 2) {
-    const a = handAnchor(left), b = handAnchor(right), d = distance(a, b), openBoost = left.gesture === 'OPEN' && right.gesture === 'OPEN' ? 1.16 : 1;
-    target = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, width: Math.max(150, d * 1.06) * openBoost, height: Math.max(95, d * .58) * openBoost, angle: Math.atan2(b.y - a.y, b.x - a.x), intensity: Math.min(left.intensity, right.intensity), mode: 'TWO HANDS', distance: d };
+    const a = handAnchor(left), b = handAnchor(right), d = distance(a, b), openBoost = left.gesture === 'OPEN' && right.gesture === 'OPEN' ? 1.12 : 1;
+    // Hands are controllers: their midpoint drives the center and their separation drives UNIFORM scale.
+    // Keep the hologram inside the two anchors, rather than treating the fingertips as panel corners.
+    const width = clamp(d * .72 * openBoost, 145, Math.min(innerWidth * .78, 900));
+    let handAxis = Math.atan2(b.y - a.y, b.x - a.x);
+    // A panel has an undirected horizontal axis, so 180° is still horizontal rather than an extreme rotation.
+    if (handAxis > Math.PI / 2) handAxis -= Math.PI;
+    if (handAxis < -Math.PI / 2) handAxis += Math.PI;
+    const angle = Math.abs(handAxis) < .12 ? 0 : clamp(handAxis, -.42, .42);
+    target = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, width, height: width / PANEL_ASPECT, angle, intensity: Math.min(left.intensity, right.intensity), mode: 'TWO HANDS', distance: d };
   } else if (active.length === 1) {
     const hand = active[0], anchor = handAnchor(hand), wrist = hand.points[0], d = distance(anchor, wrist);
-    target = { x: (anchor.x + wrist.x) / 2, y: (anchor.y + wrist.y) / 2, width: Math.max(135, d * 1.5) * (hand.gesture === 'OPEN' ? 1.25 : hand.gesture === 'FIST' ? .68 : 1), height: Math.max(80, d * .88), angle: Math.atan2(anchor.y - wrist.y, anchor.x - wrist.x), intensity: hand.intensity, mode: 'ONE HAND', distance: d };
+    const size = clamp(d * 1.22 * (hand.gesture === 'OPEN' ? 1.2 : hand.gesture === 'FIST' ? .7 : 1), 135, Math.min(innerWidth * .58, 560));
+    let handAxis = Math.atan2(anchor.y - wrist.y, anchor.x - wrist.x);
+    if (handAxis > Math.PI / 2) handAxis -= Math.PI;
+    if (handAxis < -Math.PI / 2) handAxis += Math.PI;
+    target = { x: (anchor.x + wrist.x) / 2, y: (anchor.y + wrist.y) / 2, width: size, height: size / PANEL_ASPECT, angle: Math.abs(handAxis) < .14 ? 0 : clamp(handAxis, -.42, .42), intensity: hand.intensity, mode: 'ONE HAND', distance: d };
   }
   const bothPinching = active.length === 2 && left.gesture === 'PINCH' && right.gesture === 'PINCH';
   if (bothPinching && !state.bothPinching) { panel.burst = 1; emitBurst(panel.x, panel.y, 44); }
@@ -171,9 +185,9 @@ function renderRGBPanel(now) {
   const burst = p.burst, distortion = burst * 34 + (state.left.gesture === 'FIST' || state.right.gesture === 'FIST' ? 12 : 0);
   ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle); ctx.globalCompositeOperation = 'screen';
   const layers = [['#ff2638', -9, 2], ['#00f4ff', 9, -2], ['#e63dff', 2, -7], ['#285cff', 4, 7], ['#62ff62', -3, 4], ['#ffe641', 0, 0]];
-  layers.forEach(([color, ox, oy], index) => { const flutter = Math.sin(now * .008 + index) * (1 + burst * 3); ctx.globalAlpha = p.intensity * (.06 + index * .018); ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 18 + burst * 30; ctx.fillRect(-p.width / 2 + ox + flutter, -p.height / 2 + oy, p.width, p.height); });
-  ctx.shadowBlur = 0; ctx.globalAlpha = p.intensity * .52; ctx.fillStyle = '#071127'; ctx.fillRect(-p.width / 2, -p.height / 2, p.width, p.height);
-  ctx.globalAlpha = p.intensity * .55; for (let y = -p.height / 2; y < p.height / 2; y += 5) { ctx.fillStyle = y % 10 ? '#00040c' : '#9dfdff'; ctx.fillRect(-p.width / 2, y, p.width, 1); }
+  layers.forEach(([color, ox, oy], index) => { const flutter = Math.sin(now * .008 + index) * (1 + burst * 3); ctx.globalAlpha = p.intensity * (.035 + index * .01); ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 18 + burst * 30; ctx.fillRect(-p.width / 2 + ox + flutter, -p.height / 2 + oy, p.width, p.height); });
+  ctx.shadowBlur = 0; ctx.globalAlpha = p.intensity * .26; ctx.fillStyle = '#071127'; ctx.fillRect(-p.width / 2, -p.height / 2, p.width, p.height);
+  ctx.globalAlpha = p.intensity * .3; for (let y = -p.height / 2; y < p.height / 2; y += 5) { ctx.fillStyle = y % 10 ? '#00040c' : '#9dfdff'; ctx.fillRect(-p.width / 2, y, p.width, 1); }
   const tears = 5 + Math.floor(burst * 13); for (let i = 0; i < tears; i++) { const y = -p.height / 2 + Math.random() * p.height, h = 1 + Math.random() * 9, shift = (Math.random() - .5) * (18 + distortion); ctx.globalAlpha = p.intensity * (.08 + Math.random() * .16); ctx.fillStyle = i % 2 ? '#00efff' : '#ff26c9'; ctx.fillRect(-p.width / 2 + shift, y, p.width, h); }
   for (let i = 0; i < 11; i++) { ctx.globalAlpha = p.intensity * .25; ctx.fillStyle = i % 2 ? '#ff45ce' : '#46fff4'; ctx.fillRect(-p.width * .42 + Math.random() * p.width * .84, -p.height * .4 + Math.random() * p.height * .8, 3 + Math.random() * 20, 1 + Math.random() * 4); }
   ctx.globalAlpha = p.intensity; ctx.shadowBlur = 18; ctx.shadowColor = '#42ffff'; ctx.strokeStyle = '#d8ffff'; ctx.lineWidth = 1.2; ctx.strokeRect(-p.width / 2, -p.height / 2, p.width, p.height); ctx.shadowBlur = 0;
