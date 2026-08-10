@@ -9,6 +9,9 @@ const handsStatus = document.querySelector('#hands-status');
 const linkStatus = document.querySelector('#link-status');
 const modeStatus = document.querySelector('#mode-status');
 const gestureStatus = document.querySelector('#gesture-status');
+const objectStatus = document.querySelector('#object-status');
+const velocityStatus = document.querySelector('#velocity-status');
+const energyStatus = document.querySelector('#energy-status');
 const fpsElement = document.querySelector('#fps');
 const notice = document.querySelector('#notice');
 const debugButton = document.querySelector('#debug-toggle');
@@ -19,13 +22,14 @@ const state = {
   left: makeHandState('LEFT', '#ff54c8'),
   right: makeHandState('RIGHT', '#44f5ff'),
   panel: { x: innerWidth / 2, y: innerHeight / 2, width: 250, height: 155, angle: 0, intensity: 0, mode: 'SEARCHING', distance: 0, burst: 0 },
-  particles: [], debug: false, bothPinching: false, detectedHands: [], detectedCount: 0,
+  particles: [], objects: [], shockwaves: [], debug: false, bothPinching: false, detectedHands: [], detectedCount: 0,
+  glitchIntensity: .1, powerCooldown: 0, closeHandsAt: 0, previousHandDistance: 0,
 };
 let landmarker, lastVideoTime = -1, lastDetectAt = 0;
 let lastFrameAt = performance.now(), fpsClock = lastFrameAt, frameCount = 0;
 
 function makeHandState(label, color) {
-  return { label, color, points: [], targetPoints: [], palm: null, targetPalm: null, gesture: 'NONE', previousGesture: 'NONE', visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
+  return { label, color, points: [], targetPoints: [], palm: null, previousPalm: null, targetPalm: null, velocity: { x: 0, y: 0, speed: 0 }, trail: [], rotation: 0, gesture: 'NONE', previousGesture: 'NONE', visible: false, intensity: 0, lastSeen: 0, anchorLock: null };
 }
 function setNotice(title, detail, error = false) {
   notice.classList.toggle('error', error); notice.classList.remove('hidden');
@@ -115,6 +119,10 @@ function processHands(result, now) {
     hand.previousGesture = hand.gesture; hand.gesture = detectGesture(points);
     if (hand.gesture === 'PINCH' && hand.previousGesture !== 'PINCH') hand.anchorLock = { ...points[8] };
     if (hand.gesture !== 'PINCH') hand.anchorLock = null;
+    if (hand.gesture === 'PINCH' && hand.previousGesture !== 'PINCH') beginGrab(hand, points[8]);
+    if (hand.gesture !== 'PINCH' && hand.previousGesture === 'PINCH') releaseGrab(hand);
+    if (hand.gesture === 'FIST' && hand.previousGesture !== 'FIST') triggerFist(hand, points[8], true);
+    if (hand.gesture === 'OPEN' && hand.previousGesture === 'FIST') triggerFist(hand, points[8], false);
     state.detectedHands.push({ order: index + 1, label: hand.label, index: { ...points[8] } });
   });
   ['left', 'right'].forEach(key => { if (!seen.has(key)) state[key].visible = false; });
@@ -128,6 +136,15 @@ function smoothHands(dt, now) {
     if (!hand.points.length) hand.points = hand.targetPoints.map(p => ({ ...p }));
     else hand.points.forEach((p, i) => { p.x = lerp(p.x, hand.targetPoints[i].x, follow); p.y = lerp(p.y, hand.targetPoints[i].y, follow); });
     hand.palm = hand.palm ? { x: lerp(hand.palm.x, hand.targetPalm.x, follow), y: lerp(hand.palm.y, hand.targetPalm.y, follow) } : { ...hand.targetPalm };
+    if (hand.previousPalm) {
+      hand.velocity.x = (hand.palm.x - hand.previousPalm.x) / Math.max(dt, .001);
+      hand.velocity.y = (hand.palm.y - hand.previousPalm.y) / Math.max(dt, .001);
+      hand.velocity.speed = Math.hypot(hand.velocity.x, hand.velocity.y);
+    }
+    hand.previousPalm = { ...hand.palm };
+    hand.rotation = Math.atan2(hand.points[8].y - hand.points[0].y, hand.points[8].x - hand.points[0].x);
+    hand.trail.unshift({ ...hand.palm, life: 1 }); hand.trail = hand.trail.slice(0, 22); hand.trail.forEach(point => point.life -= dt * 2.2);
+    hand.trail = hand.trail.filter(point => point.life > 0);
     if (hand.anchorLock) hand.anchorLock = { x: lerp(hand.anchorLock.x, hand.targetPoints[8].x, .035), y: lerp(hand.anchorLock.y, hand.targetPoints[8].y, .035) };
   }
 }
@@ -159,6 +176,7 @@ function calculatePanelTransform(dt, now) {
   const bothPinching = active.length === 2 && left.gesture === 'PINCH' && right.gesture === 'PINCH';
   if (bothPinching && !state.bothPinching) { panel.burst = 1; emitBurst(panel.x, panel.y, 44); }
   state.bothPinching = bothPinching;
+  if (active.length === 2 && left.gesture === 'OPEN' && right.gesture === 'OPEN') target.mode = 'DUAL CONTROL';
   if (bothPinching) { target.width *= .87; target.height *= .87; target.mode = 'CONTROL MODE'; }
   const follow = 1 - Math.pow(.004, dt);
   panel.x = lerp(panel.x, target.x, follow); panel.y = lerp(panel.y, target.y, follow);
@@ -170,14 +188,56 @@ function calculatePanelTransform(dt, now) {
 function emitBurst(x, y, count) {
   for (let i = 0; i < count; i++) { const angle = Math.random() * Math.PI * 2, speed = 70 + Math.random() * 280; state.particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: .5 + Math.random() * .7, maxLife: 1, color: i % 2 ? '#ff35c8' : '#37f7ff' }); }
 }
+function makeObject(x, y, owner) {
+  const kinds = ['CUBE', 'RING', 'SPHERE', 'PANEL'];
+  return { type: kinds[Math.floor(Math.random() * kinds.length)], x, y, vx: 0, vy: 0, angle: 0, rotationVelocity: (Math.random() - .5) * 1.8, scale: .75, targetScale: .75, opacity: 1, owner, dual: false, idle: 0 };
+}
+function beginGrab(hand, point) {
+  let object = state.objects.find(item => item.owner === hand.label || distance(item, point) < 70);
+  if (!object) { object = makeObject(point.x, point.y, hand.label); state.objects.push(object); }
+  object.owner = hand.label; object.idle = 0; state.glitchIntensity = Math.max(state.glitchIntensity, .5);
+}
+function releaseGrab(hand) {
+  state.objects.filter(item => item.owner === hand.label).forEach(item => { item.owner = null; item.dual = false; item.vx = hand.velocity.x * .42; item.vy = hand.velocity.y * .42; item.rotationVelocity += hand.velocity.speed * .001; item.idle = 1; });
+}
+function triggerFist(hand, point, compression) {
+  state.shockwaves.push({ x: point.x, y: point.y, radius: compression ? 12 : 4, life: 1, compression }); emitBurst(point.x, point.y, compression ? 16 : 25); state.glitchIntensity = Math.max(state.glitchIntensity, compression ? .8 : 1);
+}
+function updateObjects(dt) {
+  const left = state.left, right = state.right;
+  const pinching = [left, right].filter(hand => hand.intensity > .1 && hand.gesture === 'PINCH');
+  let dualObject = pinching.length === 2 ? state.objects.find(item => item.owner === left.label || item.owner === right.label) : null;
+  if (dualObject) {
+    const a = handAnchor(left), b = handAnchor(right), d = distance(a, b); dualObject.dual = true; dualObject.owner = 'DUAL'; dualObject.x = lerp(dualObject.x, (a.x + b.x) / 2, .3); dualObject.y = lerp(dualObject.y, (a.y + b.y) / 2, .3); dualObject.targetScale = clamp(d / 180, .35, 2.8); dualObject.angle = lerpAngle(dualObject.angle, Math.atan2(b.y - a.y, b.x - a.x), .2);
+  }
+  state.objects.forEach(item => {
+    if (item.owner === left.label && left.gesture === 'PINCH') { const p = handAnchor(left); item.x = lerp(item.x, p.x, .32); item.y = lerp(item.y, p.y, .32); item.vx = left.velocity.x * .16; item.vy = left.velocity.y * .16; }
+    if (item.owner === right.label && right.gesture === 'PINCH') { const p = handAnchor(right); item.x = lerp(item.x, p.x, .32); item.y = lerp(item.y, p.y, .32); item.vx = right.velocity.x * .16; item.vy = right.velocity.y * .16; }
+    if (!item.owner) { item.x += item.vx * dt; item.y += item.vy * dt; item.vx *= .985; item.vy *= .985; item.idle -= dt; }
+    item.scale = lerp(item.scale, item.targetScale, .1); item.angle += item.rotationVelocity * dt;
+  });
+  state.objects = state.objects.slice(-7);
+}
+function drawHolographicObject(item) {
+  const size = 42 * item.scale; ctx.save(); ctx.translate(item.x, item.y); ctx.rotate(item.angle); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = item.opacity * .8; ctx.strokeStyle = '#50ffff'; ctx.fillStyle = '#ff41d1'; ctx.shadowBlur = 16; ctx.shadowColor = '#00efff'; ctx.lineWidth = 1.4;
+  if (item.type === 'CUBE') { ctx.strokeRect(-size / 2, -size / 2, size, size); ctx.strokeRect(-size / 2 + size*.22, -size / 2 - size*.22, size, size); [[-1,-1],[1,-1],[1,1],[-1,1]].forEach(([x,y]) => { ctx.beginPath(); ctx.moveTo(x*size/2,y*size/2); ctx.lineTo(x*size/2+size*.22,y*size/2-size*.22); ctx.stroke(); }); }
+  else if (item.type === 'RING') { ctx.beginPath(); ctx.ellipse(0,0,size,size*.34,0,0,Math.PI*2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0,0,size*.65,size*.23,Math.PI/2,0,Math.PI*2); ctx.stroke(); }
+  else if (item.type === 'SPHERE') { ctx.beginPath(); ctx.arc(0,0,size*.65,0,Math.PI*2); ctx.stroke(); [-.5,0,.5].forEach(n => { ctx.beginPath(); ctx.ellipse(0,n*size*.34,size*.65,size*.18,0,0,Math.PI*2); ctx.stroke(); }); }
+  else { ctx.strokeRect(-size, -size*.56, size*2, size*1.12); ctx.beginPath(); ctx.moveTo(-size*.75,0); ctx.lineTo(size*.75,0); ctx.stroke(); }
+  ctx.restore();
+}
 function renderEnergyConnection(now) {
   const { left, right } = state;
-  if (state.panel.mode !== 'TWO HANDS' && state.panel.mode !== 'CONTROL MODE') return;
+  if (!['TWO HANDS', 'CONTROL MODE', 'DUAL CONTROL'].includes(state.panel.mode)) return;
   const a = handAnchor(left), b = handAnchor(right); ctx.save(); ctx.globalCompositeOperation = 'screen';
   const gradient = ctx.createLinearGradient(a.x, a.y, b.x, b.y); gradient.addColorStop(0, left.color); gradient.addColorStop(.5, '#edfff9'); gradient.addColorStop(1, right.color);
-  ctx.strokeStyle = gradient; ctx.globalAlpha = .75 + state.panel.burst * .25; ctx.shadowBlur = 15 + state.panel.burst * 20; ctx.shadowColor = '#22ecff'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  ctx.strokeStyle = gradient; ctx.globalAlpha = .75 + state.panel.burst * .25; ctx.shadowBlur = 15 + state.panel.burst * 20; ctx.shadowColor = '#22ecff'; ctx.lineWidth = 1.1 + clamp((distance(a, b) - 90) / 220, 0, 3.2); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
   for (let i = 0; i < 10; i++) { const t = (i / 10 + now * .00022) % 1; ctx.fillStyle = i % 2 ? '#ff4dd1' : '#5bffff'; ctx.beginPath(); ctx.arc(lerp(a.x,b.x,t), lerp(a.y,b.y,t), 1.2 + state.panel.burst * 2, 0, Math.PI * 2); ctx.fill(); }
   ctx.restore();
+}
+function renderDualField(now) {
+  if (state.panel.mode !== 'DUAL CONTROL') return;
+  const p=state.panel, r=Math.max(70,p.distance*.34); ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.angle+now*.0004); ctx.globalCompositeOperation='screen'; ctx.strokeStyle='#8affff'; ctx.globalAlpha=.26; ctx.lineWidth=1; [1,.7,.42].forEach((factor,index)=>{ctx.beginPath();ctx.arc(0,0,r*factor,index,Math.PI*2-index*.55);ctx.stroke();}); for(let i=0;i<12;i++){const a=i*Math.PI/6;ctx.beginPath();ctx.moveTo(Math.cos(a)*r*.76,Math.sin(a)*r*.76);ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);ctx.stroke();}ctx.restore();
 }
 function renderHandSkeleton(hand) {
   if (hand.intensity < .025 || !hand.points.length) return;
@@ -187,9 +247,32 @@ function renderHandSkeleton(hand) {
   if (state.debug) { ctx.globalAlpha = .9; ctx.font = '10px "Share Tech Mono", monospace'; hand.points.forEach((p, id) => ctx.fillText(id, p.x + 5, p.y - 5)); ctx.fillText(`${hand.label} ${hand.gesture}`, hand.points[8].x + 10, hand.points[8].y + 18); }
   ctx.restore();
 }
+function renderHandTrail(hand) {
+  if (hand.intensity < .05 || hand.trail.length < 2) return;
+  ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.strokeStyle = hand.color; ctx.lineWidth = 2; ctx.beginPath(); hand.trail.forEach((point, i) => i ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)); ctx.globalAlpha = Math.min(.55, hand.velocity.speed / 1000 + .12); ctx.stroke(); ctx.restore();
+}
+function renderPalmInterface(hand, now) {
+  if (hand.gesture !== 'OPEN' || hand.intensity < .1 || !hand.palm) return;
+  const r = 35 + Math.sin(now*.004)*4; ctx.save(); ctx.translate(hand.palm.x, hand.palm.y); ctx.rotate(hand.rotation); ctx.globalCompositeOperation = 'screen'; ctx.strokeStyle = hand.color; ctx.globalAlpha = hand.intensity*.72; ctx.lineWidth = 1;
+  [r, r*.67, r*.38].forEach((radius, i) => { ctx.beginPath(); ctx.arc(0,0,radius,i,Math.PI*2-i*.7); ctx.stroke(); }); for(let i=0;i<8;i++) { const a=i*Math.PI/4; ctx.beginPath(); ctx.moveTo(Math.cos(a)*r*.78,Math.sin(a)*r*.78); ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r); ctx.stroke(); } ctx.font='9px "Share Tech Mono", monospace'; ctx.fillStyle=hand.color; ctx.fillText('PALM CORE',-24,3); ctx.restore();
+}
+function emitFingerParticles(hand, dt) {
+  if (hand.intensity < .1 || hand.velocity.speed < 250 || state.particles.length > 240) return;
+  const count = hand.velocity.speed > 900 ? 3 : 1;
+  [4,8,12].forEach(id => { for (let i=0;i<count;i++) { const p=hand.points[id], a=Math.random()*Math.PI*2, speed=20+Math.random()*90; state.particles.push({ x:p.x,y:p.y,vx:Math.cos(a)*speed+hand.velocity.x*.07,vy:Math.sin(a)*speed+hand.velocity.y*.07,life:.3+Math.random()*.45,maxLife:.75,color:hand.color }); } });
+}
+function renderShockwaves(dt) {
+  ctx.save(); ctx.globalCompositeOperation='screen'; state.shockwaves = state.shockwaves.filter(w => { w.life-=dt; if(w.life<=0)return false; w.radius+=dt*(w.compression?180:250); ctx.globalAlpha=w.life*.7; ctx.strokeStyle=w.compression?'#ff42cb':'#52ffff'; ctx.lineWidth=1+w.life*3; ctx.beginPath(); ctx.arc(w.x,w.y,w.radius,0,Math.PI*2); ctx.stroke(); return true; }); ctx.restore();
+}
+function detectPowerMove(now) {
+  const left=state.left,right=state.right; if (left.intensity<.3 || right.intensity<.3) return;
+  const d=distance(handAnchor(left),handAnchor(right)), combined=left.velocity.speed+right.velocity.speed;
+  if(d<130) state.closeHandsAt=now;
+  if(state.closeHandsAt && now-state.closeHandsAt<800 && d>300 && combined>1250 && now>state.powerCooldown) { state.powerCooldown=now+2000; state.closeHandsAt=0; state.glitchIntensity=1; emitBurst(state.panel.x,state.panel.y,75); state.shockwaves.push({x:state.panel.x,y:state.panel.y,radius:15,life:1.2,compression:false}); state.objects.forEach(item=>{item.owner=null;item.vx+=(Math.random()-.5)*500;item.vy+=(Math.random()-.5)*500;}); }
+}
 function renderRGBPanel(now) {
   const p = state.panel; if (p.intensity < .015) return;
-  const burst = p.burst, distortion = burst * 34 + (state.left.gesture === 'FIST' || state.right.gesture === 'FIST' ? 12 : 0);
+  const burst = p.burst + state.glitchIntensity * .22, distortion = burst * 34 + (state.left.gesture === 'FIST' || state.right.gesture === 'FIST' ? 12 : 0);
   ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle); ctx.globalCompositeOperation = 'screen';
   const layers = [['#ff2638', -9, 2], ['#00f4ff', 9, -2], ['#e63dff', 2, -7], ['#285cff', 4, 7], ['#62ff62', -3, 4], ['#ffe641', 0, 0]];
   layers.forEach(([color, ox, oy], index) => { const flutter = Math.sin(now * .008 + index) * (1 + burst * 3); ctx.globalAlpha = p.intensity * (.035 + index * .01); ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 18 + burst * 30; ctx.fillRect(-p.width / 2 + ox + flutter, -p.height / 2 + oy, p.width, p.height); });
@@ -206,13 +289,16 @@ function renderRGBPanel(now) {
 }
 function updateParticles(dt) {
   ctx.save(); ctx.globalCompositeOperation = 'screen';
-  state.particles = state.particles.filter(p => { p.life -= dt; if (p.life <= 0) return false; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .978; p.vy *= .978; ctx.globalAlpha = p.life / p.maxLife; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 1.4 + p.life * 2, 0, Math.PI * 2); ctx.fill(); return true; }); ctx.restore();
+  state.particles = state.particles.filter(p => { p.life -= dt; if (p.life <= 0) return false; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .978; p.vy = p.vy * .978 + 8 * dt; ctx.globalAlpha = p.life / p.maxLife; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 1.4 + p.life * 2, 0, Math.PI * 2); ctx.fill(); return true; }).slice(-320); ctx.restore();
 }
 function updateHUD() {
   const visible = [state.left, state.right].filter(hand => hand.intensity > .12).length;
   const link = state.detectedCount >= 2 ? 'DUAL' : state.detectedCount === 1 ? 'SINGLE' : 'NONE';
   handsStatus.textContent = `${state.detectedCount} / 2`; linkStatus.textContent = link; modeStatus.textContent = state.panel.mode;
   const gestures = [state.left, state.right].filter(h => h.intensity > .12).map(h => `${h.label[0]}:${h.gesture}`).join(' ') || 'NONE'; gestureStatus.textContent = gestures;
+  const activeObject = state.objects.at(-1); objectStatus.textContent = activeObject?.type || 'NONE';
+  const velocity = Math.max(state.left.velocity.speed, state.right.velocity.speed); velocityStatus.textContent = `${Math.round(velocity)} PX/S`;
+  energyStatus.textContent = `${Math.round(clamp((state.panel.distance / 450) * 100 + state.glitchIntensity * 18, 0, 100))}%`;
 }
 function renderDebugReadout() {
   if (!state.debug) return;
@@ -222,11 +308,12 @@ function renderDebugReadout() {
     `PANEL: ${Math.round(p.width)} x ${Math.round(p.height)} PX`,
     `ROTATION: ${Math.round((p.angle * 180 / Math.PI + 360) % 360)} DEG`,
     `DISTANCE: ${Math.round(p.distance)} PX`,
+    `OBJECTS: ${state.objects.length}  PARTICLES: ${state.particles.length}`,
     `FPS: ${fpsElement.textContent}`,
   ];
   state.detectedHands.forEach(hand => lines.push(`HAND ${hand.order}: ${hand.label}`));
   for (const hand of [state.left, state.right]) {
-    if (hand.points.length && hand.intensity > .06) lines.push(`${hand.label} INDEX: ${Math.round(hand.points[8].x)}, ${Math.round(hand.points[8].y)}`);
+    if (hand.points.length && hand.intensity > .06) lines.push(`${hand.label} INDEX: ${Math.round(hand.points[8].x)}, ${Math.round(hand.points[8].y)}  V:${Math.round(hand.velocity.speed)}  PINCH:${Math.round(distance(hand.points[4], hand.points[8]))}`);
   }
   ctx.save(); ctx.fillStyle = '#affff8'; ctx.globalAlpha = .9; ctx.font = '11px "Share Tech Mono", monospace';
   const width = 255, x = innerWidth - width - 22, y = 26;
@@ -236,7 +323,9 @@ function renderDebugReadout() {
 }
 function render(now) {
   const dt = Math.min(.08, (now - lastFrameAt) / 1000); lastFrameAt = now; ctx.clearRect(0, 0, innerWidth, innerHeight);
-  smoothHands(dt, now); calculatePanelTransform(dt, now); renderEnergyConnection(now); renderRGBPanel(now); renderHandSkeleton(state.left); renderHandSkeleton(state.right); updateParticles(dt); updateHUD(); renderDebugReadout();
+  smoothHands(dt, now); calculatePanelTransform(dt, now); detectPowerMove(now); updateObjects(dt);
+  const motion = Math.max(state.left.velocity.speed, state.right.velocity.speed); state.glitchIntensity = lerp(state.glitchIntensity, clamp(.1 + motion / 4000 + (state.bothPinching ? .35 : 0), .1, .85), .06);
+  renderDualField(now); renderEnergyConnection(now); renderRGBPanel(now); state.objects.forEach(drawHolographicObject); renderPalmInterface(state.left, now); renderPalmInterface(state.right, now); renderHandTrail(state.left); renderHandTrail(state.right); renderHandSkeleton(state.left); renderHandSkeleton(state.right); emitFingerParticles(state.left, dt); emitFingerParticles(state.right, dt); renderShockwaves(dt); updateParticles(dt); updateHUD(); renderDebugReadout();
   frameCount++; if (now - fpsClock > 700) { fpsElement.textContent = String(Math.round(frameCount * 1000 / (now - fpsClock))); fpsClock = now; frameCount = 0; }
 }
 function loop(now) {
@@ -244,7 +333,7 @@ function loop(now) {
     lastDetectAt = now; lastVideoTime = video.currentTime;
     const result = landmarker.detectForVideo(video, now);
     // Temporary diagnostic: confirms MediaPipe is returning 0, 1, or 2 real detections.
-    console.log("Detected hands:", result.landmarks.length);
+    if (state.debug) console.log("Detected hands:", result.landmarks.length);
     processHands(result, now);
   }
   render(now); requestAnimationFrame(loop);
