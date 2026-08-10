@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#070813" />
+  <title>Prism Hand Vision</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="stage" aria-label="Realtime hand tracking visualizer">
+    <video id="camera" autoplay playsinline muted></video>
+    <canvas id="overlay" aria-label="Hand tracking visualization"></canvas>
+
+    <section class="hud" aria-live="polite">
+      <p><span>CAMERA</span><b id="camera-status">INITIALIZING</b></p>
+      <p><span>VISION</span><b id="vision-status">LOADING</b></p>
+      <p><span>HAND</span><b id="hand-status">SEARCHING</b></p>
+      <p><span>FPS</span><b id="fps">--</b></p>
+    </section>
+
+    <button id="debug-toggle" type="button" title="Use a mouse-controlled effect when a webcam is unavailable">DEBUG MOUSE: OFF</button>
+    <div id="notice" class="notice"><strong>INITIALIZING VISION SYSTEM...</strong><span>All camera processing stays in this browser.</span></div>
+  </main>
+  <script type="module" src="script.js"></script>
+</body>
+</html>
