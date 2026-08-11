@@ -1,2 +1,30 @@
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-:root{background:#050711;color:#d9faff;font-family:"Share Tech Mono",monospace;color-scheme:dark}*{box-sizing:border-box}body{margin:0;overflow:hidden}.stage,#camera,#three-root{position:absolute;inset:0;width:100%;height:100%}#camera{object-fit:cover;transform:scaleX(-1);filter:contrast(1.05) saturate(.82) brightness(.72)}#three-root{pointer-events:none}#three-root canvas{width:100%!important;height:100%!important}.status{position:fixed;z-index:2;top:18px;left:20px;margin:0;padding:9px 11px;border:1px solid #65eefa55;background:#03091688;font-size:11px;letter-spacing:.1em;backdrop-filter:blur(6px)}.status i{display:inline-block;width:7px;height:7px;border-radius:50%;background:#61ffc5;box-shadow:0 0 10px #61ffc5;margin:0 5px}.status span{display:block;margin-top:5px;color:#ffb466;font-size:10px}#debug-toggle{position:fixed;z-index:3;right:18px;bottom:18px;border:1px solid #72f5ff88;background:#041020bb;color:#b8fbff;padding:9px 11px;font:11px "Share Tech Mono",monospace;cursor:pointer}#debug{position:fixed;z-index:3;left:20px;bottom:18px;margin:0;padding:10px 12px;border:1px solid #65eefa55;background:#030916cc;color:#bcfaff;font:10px/1.65 "Share Tech Mono",monospace}#notice{position:fixed;z-index:4;top:50%;left:50%;transform:translate(-50%,-50%);width:min(400px,calc(100vw - 32px));padding:21px;text-align:center;border:1px solid #62f0ff88;background:#040711e8;box-shadow:0 0 50px #25d3ff33}#notice strong,#notice span{display:block}#notice strong{color:#8efff4;letter-spacing:.12em;font-size:14px}#notice span{margin-top:10px;color:#adb9cf;font-size:12px;line-height:1.45}#notice.hidden{visibility:hidden;opacity:0}#notice.error{border-color:#ff7196}#notice.error strong{color:#ff8bad}
+
+:root { color-scheme: dark; background: #070813; font-family: "Share Tech Mono", Consolas, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; background: #070813; }
+.stage { position: relative; width: 100vw; height: 100vh; isolation: isolate; background: #070813; }
+#camera, #three-root, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+#camera { z-index: 0; object-fit: cover; transform: scaleX(-1); opacity: .9; filter: contrast(1.06) saturate(.88) brightness(.72); }
+#three-root { z-index: 1; pointer-events: none; }
+#three-root canvas { width: 100% !important; height: 100% !important; }
+#overlay { pointer-events: none; z-index: 2; }
+.hud { position: absolute; z-index: 3; top: 22px; left: 24px; margin: 0; width: 190px; padding: 10px 12px; border: 1px solid rgba(46, 255, 239, .28); background: rgba(4, 6, 18, .38); box-shadow: 0 0 18px rgba(0, 224, 255, .06); backdrop-filter: blur(6px); }
+.hud::before { content: "VISION / PRISM V2"; position: absolute; top: -19px; left: 0; color: #62fef6; font-size: 10px; letter-spacing: .12em; }
+.hud p { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0; color: #8b98b4; font-size: 11px; letter-spacing: .06em; }
+.hud b { color: #6fffe9; font-weight: normal; text-align: right; }
+#hands-status, #link-status, #mode-status, #gesture-status, #object-status, #velocity-status, #energy-status { color: #ff66ca; }
+#debug-toggle { position: absolute; z-index: 3; right: 22px; bottom: 20px; border: 1px solid rgba(255, 85, 211, .58); color: #ffb3e7; background: rgba(11, 4, 20, .66); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; }
+#debug-toggle:hover { color: #fff; box-shadow: 0 0 18px rgba(255, 46, 196, .42); }
+.shield-toggle { position: fixed; z-index: 20; top: 20px; right: 22px; display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border: 1px solid rgba(255, 184, 66, .78); color: #ffd58a; background: rgba(17, 10, 3, .82); padding: 9px 11px; font: 11px "Share Tech Mono", monospace; letter-spacing: .08em; cursor: pointer; pointer-events: auto; box-shadow: 0 0 16px rgba(255, 153, 37, .16); transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.shield-toggle span { color: #ff8d4c; }
+.shield-toggle.active { border-color: rgba(255, 220, 127, .95); background: rgba(63, 31, 5, .62); box-shadow: 0 0 18px rgba(255, 153, 37, .25); }
+.shield-toggle.active span { color: #fff0b3; }
+.shield-toggle.hand-hover { border-color: #fff1b0; box-shadow: 0 0 25px rgba(255, 169, 48, .6); }
+.notice { position: absolute; z-index: 4; left: 50%; top: 50%; width: min(410px, calc(100vw - 40px)); transform: translate(-50%, -50%); padding: 20px 24px; border: 1px solid rgba(49, 234, 255, .5); background: rgba(5, 7, 20, .84); text-align: center; box-shadow: 0 0 45px rgba(0, 212, 255, .18); transition: opacity .45s ease, visibility .45s ease; }
+.notice strong { display: block; color: #70fff4; font-size: 14px; font-weight: normal; letter-spacing: .12em; }
+.notice span { display: block; margin-top: 10px; color: #a7b3c9; font-size: 12px; line-height: 1.45; }
+.notice.hidden { opacity: 0; visibility: hidden; }
+.notice.error { border-color: rgba(255, 83, 144, .7); }
+.notice.error strong { color: #ff81b7; }
+@media (max-width: 560px) { .hud { top: 18px; left: 18px; } #debug-toggle { right: 14px; bottom: 14px; } }

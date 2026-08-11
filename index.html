@@ -3,18 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#050711" />
-  <title>Hand AR · Foundation</title>
+  <meta name="theme-color" content="#070813" />
+  <title>Prism Hand Vision V2</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="stage" aria-label="Webcam hand-tracking augmented reality">
+  <main class="stage" aria-label="Realtime hand tracking visualizer">
     <video id="camera" autoplay playsinline muted></video>
     <div id="three-root" aria-hidden="true"></div>
-    <p class="status">AR <i></i> ONLINE <span id="status">HANDS: 0 · CUBE: READY</span></p>
-    <button id="debug-toggle" type="button">DEBUG [D]</button>
-    <pre id="debug" hidden></pre>
-    <div id="notice"><strong>INITIALIZING AR</strong><span>Allow webcam access. Processing stays on this device.</span></div>
+    <canvas id="overlay" aria-label="Hand tracking visualization"></canvas>
+
+    <section class="hud" aria-live="polite">
+      <p><span>CAMERA</span><b id="camera-status">INITIALIZING</b></p>
+      <p><span>VISION</span><b id="vision-status">LOADING</b></p>
+      <p><span>HANDS</span><b id="hands-status">0 / 2</b></p>
+      <p><span>HAND LINK</span><b id="link-status">NONE</b></p>
+      <p><span>MODE</span><b id="mode-status">SEARCHING</b></p>
+      <p><span>GESTURE</span><b id="gesture-status">NONE</b></p>
+      <p><span>OBJECT</span><b id="object-status">NONE</b></p>
+      <p><span>VELOCITY</span><b id="velocity-status">0</b></p>
+      <p><span>ENERGY</span><b id="energy-status">0%</b></p>
+      <p><span>FPS</span><b id="fps">--</b></p>
+    </section>
+
+    <button id="debug-toggle" type="button" title="Toggle hand landmark debug data (D)">DEBUG: OFF [D]</button>
+    <button id="shield-toggle" class="shield-toggle" type="button" aria-pressed="false">MAGIC SHIELD <span>OFF</span></button>
+    <div id="notice" class="notice"><strong>INITIALIZING VISION SYSTEM...</strong><span>All camera processing stays in this browser.</span></div>
   </main>
   <script type="module" src="script.js"></script>
 </body>
