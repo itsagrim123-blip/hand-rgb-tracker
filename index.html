@@ -4,18 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#050711" />
-  <title>V5 · Hand AR World</title>
+  <title>Hand AR · Foundation</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="stage" aria-label="Real-time webcam hand-tracking augmented reality">
+  <main class="stage" aria-label="Webcam hand-tracking augmented reality">
     <video id="camera" autoplay playsinline muted></video>
     <div id="three-root" aria-hidden="true"></div>
-    <section class="status" aria-live="polite"><b>AR <i></i> ONLINE</b><span id="quick-status">HANDS: 0 · OBJECTS: 0</span></section>
-    <section id="debug-panel" class="debug" hidden></section>
-    <button id="shield-toggle" class="shield-toggle" type="button" aria-pressed="false">SHIELD <span>OFF</span></button>
+    <p class="status">AR <i></i> ONLINE <span id="status">HANDS: 0 · CUBE: READY</span></p>
     <button id="debug-toggle" type="button">DEBUG [D]</button>
-    <div id="notice" class="notice"><strong>INITIALIZING AR</strong><span>Allow camera access. Processing stays in your browser.</span></div>
+    <pre id="debug" hidden></pre>
+    <div id="notice"><strong>INITIALIZING AR</strong><span>Allow webcam access. Processing stays on this device.</span></div>
   </main>
   <script type="module" src="script.js"></script>
 </body>

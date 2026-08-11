@@ -1,61 +1,83 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js';
 import { FilesetResolver, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm';
 
-const video=document.querySelector('#camera'), root=document.querySelector('#three-root'), notice=document.querySelector('#notice');
-const quick=document.querySelector('#quick-status'), debug=document.querySelector('#debug-panel'), shieldButton=document.querySelector('#shield-toggle');
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t;
-const V=(x=0,y=0,z=0)=>new THREE.Vector3(x,y,z);
+const video=document.querySelector('#camera'), root=document.querySelector('#three-root');
+const status=document.querySelector('#status'), notice=document.querySelector('#notice'), debug=document.querySelector('#debug');
+const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 
-class Particles {
-  constructor(scene){this.max=500;this.data=[];this.pos=new Float32Array(this.max*3);this.col=new Float32Array(this.max*3);this.geo=new THREE.BufferGeometry();this.geo.setAttribute('position',new THREE.BufferAttribute(this.pos,3));this.geo.setAttribute('color',new THREE.BufferAttribute(this.col,3));this.points=new THREE.Points(this.geo,new THREE.PointsMaterial({size:.045,vertexColors:true,transparent:true,opacity:.85,depthWrite:false,blending:THREE.AdditiveBlending}));scene.add(this.points);}
-  burst(at,color=0xff9e36,count=14,power=1){for(let i=0;i<count&&this.data.length<this.max;i++){const d=V(Math.random()-.5,Math.random()-.5,Math.random()-.5).normalize().multiplyScalar((.7+Math.random()*1.8)*power);this.data.push({p:at.clone(),v:d,life:.35+Math.random()*.7,c:new THREE.Color(color)});}}
-  update(dt){this.data=this.data.filter(p=>{p.life-=dt;p.p.addScaledVector(p.v,dt);p.v.multiplyScalar(.96);return p.life>0;}); this.data.forEach((p,i)=>{this.pos.set(p.p.toArray(),i*3);this.col.set(p.c.toArray(),i*3)});for(let i=this.data.length;i<this.max;i++)this.pos[i*3+2]=-99;this.geo.attributes.position.needsUpdate=true;this.geo.attributes.color.needsUpdate=true;}
+// The video is CSS-mirrored, so X is inverted exactly once here.
+function mediaPipeToWorld(landmark,camera){
+  const distance=camera.position.z;
+  const height=2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))*distance;
+  const width=height*camera.aspect;
+  return new THREE.Vector3((.5-landmark.x)*width,(.5-landmark.y)*height,clamp(-landmark.z*4,-1.4,1.4));
 }
-class PhysicsObject {
-  constructor(mesh,type='CUBE'){this.mesh=mesh;this.type=type;this.velocity=V();this.angularVelocity=V((Math.random()-.5)*2,(Math.random()-.5)*2,(Math.random()-.5)*2);this.mass=1;this.drag=.92;this.grabbers=[];this.scale=1;this.targetScale=1;this.history=[];}
-  update(dt){if(!this.grabbers.length){this.velocity.y-=2.4*dt;this.velocity.multiplyScalar(Math.pow(this.drag,dt));this.mesh.position.addScaledVector(this.velocity,dt);if(this.mesh.position.y< -2.55){this.mesh.position.y=-2.55;this.velocity.y=Math.abs(this.velocity.y)*.55;this.velocity.x*=.75;this.velocity.z*=.75;}}
-    this.mesh.rotation.x+=this.angularVelocity.x*dt;this.mesh.rotation.y+=this.angularVelocity.y*dt;this.mesh.rotation.z+=this.angularVelocity.z*dt;this.scale=lerp(this.scale,this.targetScale,Math.min(1,dt*10));this.mesh.scale.setScalar(this.scale);}
-}
-class ObjectManager {
-  constructor(scene,particles){this.scene=scene;this.particles=particles;this.items=[];this.floor=new THREE.Mesh(new THREE.PlaneGeometry(18,12),new THREE.ShadowMaterial({opacity:.18}));this.floor.rotation.x=-Math.PI/2;this.floor.position.y=-2.6;this.floor.receiveShadow=true;scene.add(this.floor);}
-  material(color){return new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:.22,metalness:.45,roughness:.25});}
-  create(type,pos){let g;const c={CUBE:0x4cecff,SPHERE:0xff5fcf,TORUS:0xffb238,ICOSAHEDRON:0x8d7bff,ORB:0x72ffe4}[type]||0xffae42;if(type==='CUBE')g=new THREE.BoxGeometry(.58,.58,.58);else if(type==='SPHERE')g=new THREE.SphereGeometry(.36,28,20);else if(type==='TORUS')g=new THREE.TorusGeometry(.32,.1,12,32);else if(type==='ICOSAHEDRON')g=new THREE.IcosahedronGeometry(.39,1);else if(type==='BEAM')g=new THREE.CylinderGeometry(.055,.055,1,10);else g=new THREE.SphereGeometry(.33,24,16);const mesh=new THREE.Mesh(g,this.material(c));mesh.position.copy(pos);mesh.castShadow=true;this.scene.add(mesh);const o=new PhysicsObject(mesh,type);this.items.push(o);this.particles.burst(pos,c,12);return o;}
-  createTube(points){if(points.length<4)return;const curve=new THREE.CatmullRomCurve3(points);const mesh=new THREE.Mesh(new THREE.TubeGeometry(curve,Math.min(80,points.length*3),.045,7,false),new THREE.MeshStandardMaterial({color:0xffae42,emissive:0xff5c12,emissiveIntensity:1,transparent:true,opacity:.92}));this.scene.add(mesh);const o=new PhysicsObject(mesh,'ENERGY TUBE');this.items.push(o);this.particles.burst(points.at(-1),0xffa236,24,1.4);}
-  update(dt){this.items.forEach(o=>o.update(dt));}
-}
-class MagicShield {
-  constructor(scene,particles,color){this.group=new THREE.Group();this.group.visible=false;this.group.scale.setScalar(.001);this.particles=particles;this.rings=[];const mat=(opacity=.85)=>new THREE.MeshBasicMaterial({color,transparent:true,opacity,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,depthWrite:false});
-    [[.66,.018,0],[.48,.015,.035],[.3,.012,-.025]].forEach(([r,t,z],i)=>{const m=new THREE.Mesh(new THREE.TorusGeometry(r,t,8,64),mat(.8-i*.12));m.position.z=z;this.group.add(m);this.rings.push(m);});
-    const lines=new THREE.Group();for(let i=0;i<12;i++){const a=i*Math.PI/6,geom=new THREE.BufferGeometry().setFromPoints([V(Math.cos(a)*.2,Math.sin(a)*.2,.02),V(Math.cos(a)*.61,Math.sin(a)*.61,.02)]);lines.add(new THREE.Line(geom,new THREE.LineBasicMaterial({color,transparent:true,opacity:.75,blending:THREE.AdditiveBlending})));}this.group.add(lines);this.rings.push(lines);scene.add(this.group);this.active=false;}
-  toggle(){this.active=!this.active;}
-  update(hand,dt,now){const target=this.active&&hand.visible?1:0;this.group.visible=this.group.scale.x>.01||target>0;const s=lerp(this.group.scale.x,target,Math.min(1,dt*7));this.group.scale.setScalar(s);if(!hand.visible)return;this.group.position.copy(hand.palm).add(V(0,0,.16));this.group.quaternion.slerp(hand.orientation,Math.min(1,dt*10));this.rings.forEach((r,i)=>r.rotation.z+=(i%2?-.8:1.2)*(i+1)*dt);if(target&&Math.random()<dt*14)this.particles.burst(this.group.position,0xff9e36,1,.38);}
-}
+
 class HandTracker {
-  constructor(){this.hands={left:this.hand('LEFT'),right:this.hand('RIGHT')};}
-  hand(label){return{label,visible:false,points:[],palm:V(),pinch:V(),index:V(),orientation:new THREE.Quaternion(),pinching:false,wasPinching:false,confidence:0,velocity:V(),previous:V(),history:[],lastSeen:0};}
-  world(l){const aspect=innerWidth/innerHeight;return V((.5-l.x)*aspect*6,(.5-l.y)*6,clamp(-l.z*7,-2,2));}
-  process(r,now){const seen=new Set();(r.landmarks||[]).forEach((landmarks,i)=>{const label=(r.handednesses?.[i]?.[0]?.categoryName||'').toLowerCase();const key=label.includes('left')?'left':label.includes('right')?'right':landmarks[0].x<.5?'right':'left';const h=this.hands[key];seen.add(key);h.visible=true;h.lastSeen=now;h.confidence=r.handednesses?.[i]?.[0]?.score||0;h.points=landmarks.map(x=>this.world(x));const palm=h.points[0].clone().add(h.points[5]).add(h.points[9]).add(h.points[13]).add(h.points[17]).multiplyScalar(.2);h.palm.lerp(palm,.38);h.index.lerp(h.points[8],.42);h.pinch.copy(h.points[4]).add(h.points[8]).multiplyScalar(.5);const d=h.points[4].distanceTo(h.points[8]);h.wasPinching=h.pinching;h.pinching=h.pinching?d<.17:d<.13;const forward=h.points[9].clone().sub(h.points[0]).normalize(), side=h.points[17].clone().sub(h.points[5]).normalize();const m=new THREE.Matrix4().makeBasis(side,forward,new THREE.Vector3().crossVectors(side,forward).normalize());h.orientation.setFromRotationMatrix(m);h.velocity.copy(h.palm).sub(h.previous).multiplyScalar(1/Math.max(.016,(now-h.lastMotion||16)/1000));h.previous.copy(h.palm);h.lastMotion=now;h.history.push({p:h.pinch.clone(),t:now});h.history=h.history.filter(x=>now-x.t<130);});Object.entries(this.hands).forEach(([k,h])=>{if(!seen.has(k)&&now-h.lastSeen>300){h.visible=false;if(h.pinching){h.wasPinching=true;h.pinching=false;}}});}
+  constructor(camera){this.camera=camera;this.hands={left:this.makeHand('LEFT'),right:this.makeHand('RIGHT')};}
+  makeHand(label){return {label,visible:false,confidence:0,pinch:false,wasPinching:false,pinchDistance:1,index:new THREE.Vector3(),pinchPoint:new THREE.Vector3(),targetIndex:new THREE.Vector3(),targetPinch:new THREE.Vector3(),lastSeen:0};}
+  update(result,now){
+    const seen=new Set();
+    (result.landmarks||[]).forEach((landmarks,i)=>{
+      const modelLabel=(result.handednesses?.[i]?.[0]?.categoryName||'').toLowerCase();
+      const key=modelLabel.includes('left')?'left':modelLabel.includes('right')?'right':(landmarks[0].x<.5?'right':'left');
+      const hand=this.hands[key], thumb=landmarks[4], index=landmarks[8]; seen.add(key);
+      hand.visible=true; hand.lastSeen=now; hand.confidence=result.handednesses?.[i]?.[0]?.score||0;
+      hand.targetIndex.copy(mediaPipeToWorld(index,this.camera));
+      hand.targetPinch.copy(mediaPipeToWorld(thumb,this.camera)).lerp(hand.targetIndex,.5);
+      hand.index.lerp(hand.targetIndex,.38); hand.pinchPoint.lerp(hand.targetPinch,.38);
+      hand.pinchDistance=Math.hypot(thumb.x-index.x,thumb.y-index.y,thumb.z-index.z);
+      hand.wasPinching=hand.pinch;
+      hand.pinch=hand.pinch ? hand.pinchDistance<.075 : hand.pinchDistance<.055;
+    });
+    Object.entries(this.hands).forEach(([key,hand])=>{if(!seen.has(key)&&now-hand.lastSeen>250){hand.visible=false;hand.wasPinching=hand.pinch;hand.pinch=false;}});
+  }
 }
-class Interaction {
-  constructor(scene,tracker,objects,particles){this.scene=scene;this.tracker=tracker;this.objects=objects;this.particles=particles;this.ray=new THREE.Raycaster();this.draw={active:false,points:[],line:null,owner:null};this.scaling=null;}
-  nearest(hand){return this.objects.items.filter(o=>!o.grabbers.length||o.grabbers.includes(hand.label)).sort((a,b)=>a.mesh.position.distanceTo(hand.pinch)-b.mesh.position.distanceTo(hand.pinch))[0];}
-  grab(hand){const o=this.nearest(hand);if(o&&o.mesh.position.distanceTo(hand.pinch)<.8&&!o.grabbers.includes(hand.label)){o.grabbers.push(hand.label);o.velocity.set(0,0,0);}}
-  release(hand){this.objects.items.filter(o=>o.grabbers.includes(hand.label)).forEach(o=>{o.grabbers=o.grabbers.filter(x=>x!==hand.label);if(!o.grabbers.length){const hist=hand.history;const a=hist[0],b=hist.at(-1);if(a&&b)o.velocity.copy(b.p).sub(a.p).multiplyScalar(1/Math.max(.06,(b.t-a.t)/1000)*.22);o.angularVelocity.addScaledVector(hand.velocity,.12);this.particles.burst(o.mesh.position,0x6cf5ff,12,1);}});}
-  startDrawing(h){this.draw={active:true,points:[],line:null,owner:h.label};}
-  finishDrawing(){const d=this.draw;if(!d.active)return;d.active=false;if(d.line)this.scene.remove(d.line);if(d.points.length>5){const shape=this.shape(d.points);if(shape==='CIRCLE')this.objects.create('TORUS',d.points[0]);else if(shape==='LINE')this.objects.create('BEAM',d.points[0]);else if(shape==='SQUARE')this.objects.create('CUBE',d.points[0]);else if(shape==='TRIANGLE')this.objects.create('ICOSAHEDRON',d.points[0]);else this.objects.createTube(d.points);}this.draw={active:false,points:[],line:null,owner:null};}
-  shape(p){const span=Math.max(...p.map(x=>x.x))-Math.min(...p.map(x=>x.x)),height=Math.max(...p.map(x=>x.y))-Math.min(...p.map(x=>x.y)),end=p[0].distanceTo(p.at(-1));if(end<Math.max(span,height)*.3)return 'CIRCLE';if(end>Math.max(span,height)*.75&&p.length<22)return 'LINE';return p.length<18?'TRIANGLE':'SQUARE';}
-  update(dt){const hs=Object.values(this.tracker.hands);hs.forEach(h=>{if(h.visible&&h.pinching&&!h.wasPinching){const overButton=this.overButton(h);if(overButton){shieldButton.dispatchEvent(new CustomEvent('handshield',{detail:h.label.toLowerCase()}));return;}const held=this.objects.items.some(o=>o.grabbers.includes(h.label));if(!held&&h.points[12]&&h.index.distanceTo(h.points[12])>.65)this.startDrawing(h);else this.grab(h);}if(h.wasPinching&&!h.pinching){if(this.draw.owner===h.label)this.finishDrawing();else this.release(h);}});
-    this.objects.items.forEach(o=>{if(o.grabbers.length===1){const h=this.tracker.hands[o.grabbers[0].toLowerCase()];if(h?.visible)o.mesh.position.lerp(h.pinch,.25);}if(o.grabbers.length===2){const a=this.tracker.hands.left,b=this.tracker.hands.right;if(a.visible&&b.visible){o.mesh.position.lerp(a.pinch.clone().add(b.pinch).multiplyScalar(.5),.22);o.targetScale=clamp(a.pinch.distanceTo(b.pinch)/.75,.35,2.8);const q=new THREE.Quaternion().setFromUnitVectors(V(1,0,0),b.pinch.clone().sub(a.pinch).normalize());o.mesh.quaternion.slerp(q,.16);}}});
-    const owner=this.tracker.hands[this.draw.owner?.toLowerCase()];if(this.draw.active&&owner?.visible){const p=owner.index.clone();if(!this.draw.points.length||p.distanceTo(this.draw.points.at(-1))>.045){this.draw.points.push(p);this.particles.burst(p,0xffb13b,1,.22);if(this.draw.line)this.scene.remove(this.draw.line);const g=new THREE.BufferGeometry().setFromPoints(this.draw.points);this.draw.line=new THREE.Line(g,new THREE.LineBasicMaterial({color:0xffc05b,transparent:true,opacity:.95,blending:THREE.AdditiveBlending}));this.scene.add(this.draw.line);}}}
-  overButton(h){const r=shieldButton.getBoundingClientRect(),x=(.5-h.points[8].x/(innerWidth/innerHeight*6))*innerWidth,y=(.5-h.points[8].y/6)*innerHeight;return x>r.left&&x<r.right&&y>r.top&&y<r.bottom;}
+
+class ThreeWorld {
+  constructor(){
+    this.scene=new THREE.Scene(); this.camera=new THREE.PerspectiveCamera(52,innerWidth/innerHeight,.1,30); this.camera.position.z=5.5;
+    this.renderer=new THREE.WebGLRenderer({alpha:true,antialias:true}); this.renderer.setPixelRatio(Math.min(devicePixelRatio,2)); this.renderer.setSize(innerWidth,innerHeight); root.append(this.renderer.domElement);
+    this.scene.add(new THREE.HemisphereLight(0xb8edff,0x11051b,2)); const key=new THREE.DirectionalLight(0xffffff,2); key.position.set(2,3,4); this.scene.add(key);
+    this.cube=new THREE.Mesh(new THREE.BoxGeometry(.7,.7,.7),new THREE.MeshStandardMaterial({color:0x43dffa,emissive:0x083b54,metalness:.45,roughness:.28})); this.cube.position.set(0,.15,0); this.scene.add(this.cube);
+    this.pointers={left:this.pointer(0xff87c8),right:this.pointer(0x63efff)}; this.grabbedBy=null;
+    addEventListener('resize',()=>this.resize());
+  }
+  pointer(color){const p=new THREE.Mesh(new THREE.SphereGeometry(.075,18,12),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.9})); p.visible=false; this.scene.add(p); return p;}
+  resize(){this.camera.aspect=innerWidth/innerHeight;this.camera.updateProjectionMatrix();this.renderer.setSize(innerWidth,innerHeight);}
+  update(tracker,dt){
+    for(const [key,hand] of Object.entries(tracker.hands)){const pointer=this.pointers[key];pointer.visible=hand.visible;if(!hand.visible)continue;pointer.position.copy(hand.index);pointer.scale.setScalar(hand.pinch?1.55:1);}
+    const hands=tracker.hands;
+    for(const hand of Object.values(hands)){
+      if(hand.pinch&&!hand.wasPinching&&!this.grabbedBy&&hand.pinchPoint.distanceTo(this.cube.position)<.72)this.grabbedBy=hand.label;
+      if(hand.wasPinching&&!hand.pinch&&this.grabbedBy===hand.label)this.grabbedBy=null;
+    }
+    if(this.grabbedBy){const hand=hands[this.grabbedBy.toLowerCase()];if(hand?.visible&&hand.pinch)this.cube.position.lerp(hand.pinchPoint,.18);else this.grabbedBy=null;}
+    else this.cube.rotation.y+=dt*.45;
+    this.renderer.render(this.scene,this.camera);
+  }
 }
-class ARWorld {
-  constructor(){this.scene=new THREE.Scene();this.camera=new THREE.PerspectiveCamera(52,innerWidth/innerHeight,.1,30);this.camera.position.z=5.8;this.renderer=new THREE.WebGLRenderer({alpha:true,antialias:true});this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.setSize(innerWidth,innerHeight);this.renderer.shadowMap.enabled=true;root.append(this.renderer.domElement);this.scene.add(new THREE.HemisphereLight(0x9cdbff,0x14051e,2),new THREE.DirectionalLight(0xffd4b0,2));this.scene.children.at(-1).position.set(2,4,4);this.particles=new Particles(this.scene);this.objects=new ObjectManager(this.scene,this.particles);[['CUBE',V(-1.3,.2,0)],['SPHERE',V(.8,.4,-.4)],['TORUS',V(.1,1.5,-.6)],['ICOSAHEDRON',V(1.6,-.5,-.3)],['ORB',V(-.4,-.9,.2)]].forEach(x=>this.objects.create(...x));this.tracker=new HandTracker();this.interaction=new Interaction(this.scene,this.tracker,this.objects,this.particles);this.shields={left:new MagicShield(this.scene,this.particles,0xff9b2f),right:new MagicShield(this.scene,this.particles,0xff9b2f)};addEventListener('resize',()=>{this.camera.aspect=innerWidth/innerHeight;this.camera.updateProjectionMatrix();this.renderer.setSize(innerWidth,innerHeight)});}
-  update(dt,now){this.interaction.update(dt);this.objects.update(dt);this.particles.update(dt);for(const [k,s] of Object.entries(this.shields))s.update(this.tracker.hands[k],dt,now);const a=this.shields.left,b=this.shields.right;if(a.active&&b.active&&a.group.position.distanceTo(b.group.position)<1){this.particles.burst(a.group.position.clone().lerp(b.group.position,.5),0xffb445,4,.8);}this.renderer.render(this.scene,this.camera);}
+
+let landmarker,lastVideoTime=-1,lastDetectAt=0,debugMode=false,frames=0,fps=0,fpsAt=performance.now();
+const world=new ThreeWorld(), tracker=new HandTracker(world.camera);
+function setNotice(title,detail,error=false){notice.classList.toggle('error',error);notice.classList.remove('hidden');notice.innerHTML=`<strong>${title}</strong><span>${detail}</span>`;}
+async function initialize(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});video.srcObject=stream;await video.play();
+    const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    landmarker=await HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:2,minHandDetectionConfidence:.45,minHandPresenceConfidence:.45,minTrackingConfidence:.45});
+    notice.classList.add('hidden');
+  }catch(error){setNotice('AR UNAVAILABLE',`${error.message}. Use HTTPS or localhost and allow webcam access.`,true);}
 }
-const world=new ARWorld(); let landmarker,lastVideo=-1,lastDetect=0,debugMode=false,frames=0,fps=0,fpsAt=performance.now();
-function msg(title,text,error=false){notice.classList.toggle('error',error);notice.classList.remove('hidden');notice.innerHTML=`<strong>${title}</strong><span>${text}</span>`;}
-async function init(){try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});video.srcObject=stream;await video.play();const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');landmarker=await HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:2,minHandDetectionConfidence:.45,minHandPresenceConfidence:.45,minTrackingConfidence:.45});notice.classList.add('hidden');}catch(e){msg('AR UNAVAILABLE',`${e.message}. Use HTTPS or localhost and allow camera access.`,true);}}
-function updateShieldButton(){const on=Object.values(world.shields).some(s=>s.active);shieldButton.classList.toggle('active',on);shieldButton.setAttribute('aria-pressed',on);shieldButton.querySelector('span').textContent=on?'ON':'OFF';}
-shieldButton.addEventListener('click',()=>{const next=!world.shields.left.active;Object.values(world.shields).forEach(s=>s.active=next);updateShieldButton();});shieldButton.addEventListener('handshield',e=>{const shield=world.shields[e.detail];shield.active=!shield.active;updateShieldButton();});document.querySelector('#debug-toggle').onclick=()=>{debugMode=!debugMode;debug.hidden=!debugMode;};addEventListener('keydown',e=>{if(e.key.toLowerCase()==='d')document.querySelector('#debug-toggle').click();});
-let prev=performance.now();function loop(now){const dt=Math.min(.05,(now-prev)/1000);prev=now;if(landmarker&&video.readyState>2&&now-lastDetect>30&&video.currentTime!==lastVideo){lastDetect=now;lastVideo=video.currentTime;world.tracker.process(landmarker.detectForVideo(video,now),now);}world.update(dt,now);frames++;if(now-fpsAt>600){fps=Math.round(frames*1000/(now-fpsAt));frames=0;fpsAt=now;}const hs=Object.values(world.tracker.hands);quick.textContent=`HANDS: ${hs.filter(h=>h.visible).length} · OBJECTS: ${world.objects.items.length}`;if(debugMode)debug.textContent=`DEBUG MODE\nFPS: ${fps}\nHANDS: ${hs.filter(h=>h.visible).length}\nLEFT: ${world.tracker.hands.left.confidence.toFixed(2)}  PINCH: ${world.tracker.hands.left.pinching}\nRIGHT: ${world.tracker.hands.right.confidence.toFixed(2)}  PINCH: ${world.tracker.hands.right.pinching}\nVELOCITY: ${Math.round(Math.max(...hs.map(h=>h.velocity.length())))}\nOBJECTS: ${world.objects.items.length}\nPARTICLES: ${world.particles.data.length}\nINTERACTION: ${world.interaction.draw.active?'DRAWING':'AR WORLD'}`;requestAnimationFrame(loop);}init();requestAnimationFrame(loop);
+document.querySelector('#debug-toggle').onclick=()=>{debugMode=!debugMode;debug.hidden=!debugMode;};
+addEventListener('keydown',event=>{if(event.key.toLowerCase()==='d'&&!event.repeat)document.querySelector('#debug-toggle').click();});
+let previous=performance.now();
+function frame(now){
+  const dt=Math.min(.05,(now-previous)/1000);previous=now;
+  if(landmarker&&video.readyState>=2&&video.currentTime!==lastVideoTime&&now-lastDetectAt>30){lastDetectAt=now;lastVideoTime=video.currentTime;tracker.update(landmarker.detectForVideo(video,now),now);}
+  world.update(tracker,dt); const hands=Object.values(tracker.hands); status.textContent=`HANDS: ${hands.filter(hand=>hand.visible).length} · CUBE: ${world.grabbedBy?'GRABBED':'READY'}`;
+  frames++;if(now-fpsAt>600){fps=Math.round(frames*1000/(now-fpsAt));frames=0;fpsAt=now;}
+  if(debugMode)debug.textContent=`DEBUG MODE\nRENDER FPS: ${fps}\nHANDS: ${hands.filter(hand=>hand.visible).length}\nLEFT confidence: ${tracker.hands.left.confidence.toFixed(2)}  pinch: ${tracker.hands.left.pinch}\nRIGHT confidence: ${tracker.hands.right.confidence.toFixed(2)}  pinch: ${tracker.hands.right.pinch}\nCUBE: ${world.cube.position.toArray().map(n=>n.toFixed(2)).join(', ')}\nGRABBED BY: ${world.grabbedBy||'none'}`;
+  requestAnimationFrame(frame);
+}
+initialize();requestAnimationFrame(frame);
