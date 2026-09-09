@@ -4,32 +4,70 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#070813" />
-  <title>Prism Hand Vision V2</title>
+  <title>RGB Hand Driver AR — Real-Time Holographic Vision</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="stage" aria-label="Realtime hand tracking visualizer">
+  <main class="stage" aria-label="Realtime RGB Hand Driver AR experience">
+    <!-- Layer 0: Mirrored Real-world Webcam Background -->
     <video id="camera" autoplay playsinline muted></video>
+
+    <!-- Layer 1: Transparent 3D Three.js AR Scene -->
     <div id="three-root" aria-hidden="true"></div>
+
+    <!-- Layer 2: 2D Overlay Canvas for Subtle Hand Markers & Debug Skeleton -->
     <canvas id="overlay" aria-label="Hand tracking visualization"></canvas>
 
+    <!-- Layer 3: Minimal Corner Telemetry HUD -->
     <section class="hud" aria-live="polite">
-      <p><span>CAMERA</span><b id="camera-status">INITIALIZING</b></p>
-      <p><span>VISION</span><b id="vision-status">LOADING</b></p>
-      <p><span>HANDS</span><b id="hands-status">0 / 2</b></p>
-      <p><span>HAND LINK</span><b id="link-status">NONE</b></p>
-      <p><span>MODE</span><b id="mode-status">SEARCHING</b></p>
-      <p><span>GESTURE</span><b id="gesture-status">NONE</b></p>
-      <p><span>OBJECT</span><b id="object-status">NONE</b></p>
-      <p><span>VELOCITY</span><b id="velocity-status">0</b></p>
-      <p><span>ENERGY</span><b id="energy-status">0%</b></p>
-      <p><span>FPS</span><b id="fps">--</b></p>
+      <div class="hud-header">
+        <span class="pulse-dot"></span>
+        <span>AR SYSTEM</span>
+        <b id="system-status">INITIALIZING</b>
+      </div>
+      <div class="hud-metrics">
+        <p><span>HANDS</span><b id="hands-status">0 / 2</b></p>
+        <p><span>OBJECTS</span><b id="objects-status">0</b></p>
+        <p><span>MODE</span><b id="mode-status">IDLE</b></p>
+        <p><span>FPS</span><b id="fps-status">--</b></p>
+      </div>
     </section>
 
-    <button id="debug-toggle" type="button" title="Toggle hand landmark debug data (D)">DEBUG: OFF [D]</button>
-    <button id="shield-toggle" class="shield-toggle" type="button" aria-pressed="false">MAGIC SHIELD <span>OFF</span></button>
-    <div id="notice" class="notice"><strong>INITIALIZING VISION SYSTEM...</strong><span>All camera processing stays in this browser.</span></div>
+    <!-- Floating Action Controls -->
+    <div class="controls-bar">
+      <button id="spawn-btn" class="ctrl-btn spawn-btn" type="button" title="Spawn 3D Object (S)">
+        <span class="btn-icon">?</span> + CREATE
+      </button>
+
+      <button id="shield-toggle" class="ctrl-btn shield-toggle" type="button" aria-pressed="false" title="Toggle 3D Magic Shield (M)">
+        <span class="btn-icon">???</span> SHIELD <span>OFF</span>
+      </button>
+
+      <button id="draw-toggle" class="ctrl-btn draw-toggle" type="button" title="Toggle 3D Air Drawing">
+        <span class="btn-icon">??</span> AIR DRAW <span>READY</span>
+      </button>
+
+      <div class="quality-wrapper">
+        <label for="quality-select">QUALITY</label>
+        <select id="quality-select" class="ctrl-select">
+          <option value="HIGH" selected>HIGH</option>
+          <option value="MED">MED</option>
+          <option value="LOW">LOW</option>
+        </select>
+      </div>
+
+      <button id="debug-toggle" class="ctrl-btn debug-toggle" type="button" title="Toggle hand landmark debug data (D)">
+        DEBUG: OFF [D]
+      </button>
+    </div>
+
+    <!-- Initialization / Error Notice -->
+    <div id="notice" class="notice">
+      <strong>INITIALIZING AR ENGINE...</strong>
+      <span>Starting camera and loading neural hand vision... All processing stays local in this browser.</span>
+    </div>
   </main>
-  <script type="module" src="script.js"></script>
+
+  <script type="module" src="src/main.js"></script>
 </body>
 </html>
