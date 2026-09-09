@@ -1,5 +1,5 @@
 /**
- * EnergySystem manages fingertip energy nodes, dual-hand interaction tethers,
+ * EnergySystem manages precision fingertip energy nodes, dual-hand interaction tethers,
  * and grab connection arcs.
  */
 
@@ -9,7 +9,7 @@ export class EnergySystem {
   constructor(scene) {
     this.scene = scene;
 
-    // 1. Precise Fingertip Energy Nodes for Left & Right index fingers
+    // Precision fingertip energy nodes
     this.fingertipNodes = {
       LEFT: this._createFingertipNode(0xff3ea5),
       RIGHT: this._createFingertipNode(0x00f2fe),
@@ -17,7 +17,7 @@ export class EnergySystem {
     this.scene.add(this.fingertipNodes.LEFT.group);
     this.scene.add(this.fingertipNodes.RIGHT.group);
 
-    // 2. Dual-hand connection arc line
+    // Dual-hand connection arc line
     const tetherGeom = new THREE.BufferGeometry();
     const tetherMat = new THREE.LineBasicMaterial({
       color: 0x6effe8,
@@ -30,12 +30,12 @@ export class EnergySystem {
     this.tetherLine.visible = false;
     this.scene.add(this.tetherLine);
 
-    // 3. Grab tether line (between pinch and held object)
+    // Grab tether line
     const grabGeom = new THREE.BufferGeometry();
     const grabMat = new THREE.LineBasicMaterial({
       color: 0x8affff,
       transparent: true,
-      opacity: 0.65,
+      opacity: 0.7,
       blending: THREE.AdditiveBlending,
     });
     this.grabLine = new THREE.Line(grabGeom, grabMat);
@@ -46,8 +46,8 @@ export class EnergySystem {
   _createFingertipNode(hexColor) {
     const group = new THREE.Group();
 
-    // Core point
-    const coreGeom = new THREE.SphereGeometry(0.045, 12, 12);
+    // Glowing core
+    const coreGeom = new THREE.SphereGeometry(0.042, 12, 12);
     const coreMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
@@ -57,12 +57,12 @@ export class EnergySystem {
     const core = new THREE.Mesh(coreGeom, coreMat);
     group.add(core);
 
-    // Outer glowing halo ring
-    const ringGeom = new THREE.RingGeometry(0.05, 0.09, 24);
+    // Halo ring
+    const ringGeom = new THREE.RingGeometry(0.048, 0.082, 24);
     const ringMat = new THREE.MeshBasicMaterial({
       color: hexColor,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.85,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
@@ -73,9 +73,6 @@ export class EnergySystem {
     return { group, core, ring, baseColor: hexColor };
   }
 
-  /**
-   * Updates fingertip nodes following the user's index fingertips.
-   */
   updateFingertips(leftHand, rightHand, now, dt) {
     [leftHand, rightHand].forEach(hand => {
       const node = this.fingertipNodes[hand.label];
@@ -85,29 +82,26 @@ export class EnergySystem {
       }
 
       node.group.visible = true;
-      const tipPos = hand.worldPoints[8];
-      node.group.position.set(tipPos.x, tipPos.y, tipPos.z);
+      const tip = hand.worldPoints[8]; // Index fingertip
+      node.group.position.set(tip.x, tip.y, tip.z);
 
-      // Pulse rate scales with movement speed
       const speed = hand.velocity.speed;
-      const pulse = 1.0 + 0.25 * Math.sin(now * 0.008 + speed * 0.005);
+      const pulse = 1.0 + 0.2 * Math.sin(now * 0.008 + speed * 0.006);
       node.ring.scale.set(pulse, pulse, 1);
-      node.ring.rotation.z += (2.0 + speed * 0.01) * dt;
+      node.ring.rotation.z += (2.2 + speed * 0.01) * dt;
 
-      // Glow intensity increases when pointing or fast
-      const glowBoost = hand.gesture === 'POINT' ? 1.4 : 1.0;
-      node.core.scale.setScalar(Math.min(1.8, 1.0 + speed * 0.08) * glowBoost);
+      // Glow intensity responds to POINT gesture or fast speed
+      const isPointing = hand.gesture === 'POINT';
+      node.core.scale.setScalar(isPointing ? 1.4 : 1.0);
+      node.ring.material.opacity = isPointing ? 0.95 : 0.75;
     });
   }
 
-  /**
-   * Renders electric tether arc when both hands manipulate an object.
-   */
   renderDualTether(pLeft, pRight, midpoint) {
     this.tetherLine.visible = true;
     const curve = new THREE.QuadraticBezierCurve3(
       pLeft,
-      new THREE.Vector3(midpoint.x, midpoint.y + 0.15, midpoint.z),
+      new THREE.Vector3(midpoint.x, midpoint.y + 0.18, midpoint.z),
       pRight
     );
     const points = curve.getPoints(20);
@@ -118,9 +112,6 @@ export class EnergySystem {
     this.tetherLine.visible = false;
   }
 
-  /**
-   * Renders tether between pinch point and grabbed object.
-   */
   renderGrabTether(pinchPoint, objPos) {
     this.grabLine.visible = true;
     this.grabLine.geometry.setFromPoints([pinchPoint, objPos]);

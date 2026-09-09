@@ -1,6 +1,6 @@
 /**
- * HandTracker orchestrates MediaPipe HandLandmarker initialization, frame detection,
- * stable dual-hand identity resolution, smoothing, and gesture updates.
+ * HandTracker orchestrates MediaPipe HandLandmarker neural detection
+ * and decouples 30 FPS camera frames from 60+ FPS continuous smooth hand updates.
  */
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
@@ -15,16 +15,23 @@ export class HandTracker {
 
     this.landmarker = null;
     this.isReady = false;
+    this.isDetecting = false;
     this.detectedCount = 0;
     this.lastVideoTime = -1;
     this.lastDetectTime = 0;
 
     // Hand states
-    this.left = new HandState('LEFT', '#ff3ea5');   // Neon Magenta / Pink accent
-    this.right = new HandState('RIGHT', '#00f2fe'); // Neon Cyan / Blue accent
+    this.left = new HandState('LEFT', '#ff3ea5');   // Neon Magenta
+    this.right = new HandState('RIGHT', '#00f2fe'); // Neon Cyan
     this.hands = { LEFT: this.left, RIGHT: this.right };
 
-    // Smoothing & Gestures
+    // Raw targets from latest neural detection
+    this.rawTargets = {
+      LEFT: { screenPoints: [], rawLandmarks: [], confidence: 0, updated: false },
+      RIGHT: { screenPoints: [], rawLandmarks: [], confidence: 0, updated: false },
+    };
+
+    // Continuous 60fps smoothers
     this.smoothers = {
       LEFT: new HandSmoother(),
       RIGHT: new HandSmoother(),
@@ -32,15 +39,11 @@ export class HandTracker {
     this.gestureEngine = new GestureEngine();
 
     // Diagnostics
-    this.fps = 0;
     this.detectionFps = 0;
-    this._frameCount = 0;
-    this._lastFpsTime = performance.now();
+    this._detectFrames = 0;
+    this._lastFpsTimer = performance.now();
   }
 
-  /**
-   * Initializes MediaPipe HandLandmarker with GPU delegate and dual hand support.
-   */
   async initialize() {
     const fileset = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -61,18 +64,14 @@ export class HandTracker {
     this.isReady = true;
   }
 
-  /**
-   * Identifies whether a hand detection corresponds to LEFT or RIGHT with continuity protection.
-   */
-  _resolveHandKey(classification, rawPoints, confidence, seenKeys) {
+  _resolveHandKey(classification, screenPoints, confidence, seenKeys) {
     const rawName = classification?.[0]?.categoryName || classification?.[0]?.displayName || '';
-    let candidate = /left/i.test(rawName) ? 'LEFT' : /right/i.test(rawName) ? 'RIGHT' : (rawPoints[8].x < window.innerWidth * 0.5 ? 'LEFT' : 'RIGHT');
+    let candidate = /left/i.test(rawName) ? 'LEFT' : /right/i.test(rawName) ? 'RIGHT' : (screenPoints[8].x < window.innerWidth * 0.5 ? 'LEFT' : 'RIGHT');
 
-    // Continuity protection: if confidence is moderate and both hands were previously tracked,
-    // prevent rapid label flipping by matching proximity to previous palm
-    if (confidence < 0.75 && this.left.visible && this.right.visible) {
-      const palmX = (rawPoints[0].x + rawPoints[5].x + rawPoints[17].x) / 3;
-      const palmY = (rawPoints[0].y + rawPoints[5].y + rawPoints[17].y) / 3;
+    // Continuity protection to prevent identity flipping when hands cross
+    if (confidence < 0.72 && this.left.visible && this.right.visible) {
+      const palmX = screenPoints[9].x;
+      const palmY = screenPoints[9].y;
       const distL = Math.hypot(palmX - this.left.palmCenter.screen.x, palmY - this.left.palmCenter.screen.y);
       const distR = Math.hypot(palmX - this.right.palmCenter.screen.x, palmY - this.right.palmCenter.screen.y);
       const nearest = distL <= distR ? 'LEFT' : 'RIGHT';
@@ -88,72 +87,84 @@ export class HandTracker {
   }
 
   /**
-   * Processes a video frame and updates hand landmarks, smoothing, and gestures.
+   * Triggers synchronous neural detection when a new video frame is available.
+   */
+  _runDetection(now) {
+    if (!this.isReady || !this.landmarker || this.video.readyState < 2) return;
+    if (this.video.currentTime === this.lastVideoTime || (now - this.lastDetectTime < 24)) return;
+
+    this.lastVideoTime = this.video.currentTime;
+    this.lastDetectTime = now;
+
+    const result = this.landmarker.detectForVideo(this.video, now);
+    const handedness = result.handednesses || result.handedness || [];
+    const landmarksList = result.landmarks || [];
+    this.detectedCount = landmarksList.length;
+
+    const seenKeys = new Set();
+
+    landmarksList.forEach((rawLandmarks, index) => {
+      const screenPoints = rawLandmarks.map(lm => this.coordinateMapper.landmarkToScreen(lm));
+      const confidence = handedness[index]?.[0]?.score ?? 0.5;
+
+      const key = this._resolveHandKey(handedness[index], screenPoints, confidence, seenKeys);
+      seenKeys.add(key);
+
+      this.rawTargets[key].screenPoints = screenPoints;
+      this.rawTargets[key].rawLandmarks = rawLandmarks;
+      this.rawTargets[key].confidence = confidence;
+      this.rawTargets[key].updated = true;
+      this.hands[key].lastSeen = now;
+    });
+
+    ['LEFT', 'RIGHT'].forEach(key => {
+      if (!seenKeys.has(key)) {
+        this.rawTargets[key].updated = false;
+        const hand = this.hands[key];
+        if (now - hand.lastSeen > 350) {
+          hand.reset();
+          this.smoothers[key].reset();
+          this.gestureEngine.reset(key);
+        }
+      }
+    });
+
+    this._detectFrames++;
+    if (now - this._lastFpsTimer >= 1000) {
+      this.detectionFps = Math.round((this._detectFrames * 1000) / (now - this._lastFpsTimer));
+      this._detectFrames = 0;
+      this._lastFpsTimer = now;
+    }
+  }
+
+  /**
+   * Runs EVERY render frame (60+ FPS) to smoothly interpolate hands towards raw targets.
    */
   update(now, dt) {
-    if (!this.isReady || !this.landmarker || this.video.readyState < 2) return;
+    // 1. Process new video frame detection if ready
+    this._runDetection(now);
 
-    // Detect once per new video frame (approx 30-60Hz)
-    if (this.video.currentTime !== this.lastVideoTime && now - this.lastDetectTime >= 24) {
-      this.lastVideoTime = this.video.currentTime;
-      this.lastDetectTime = now;
-
-      const result = this.landmarker.detectForVideo(this.video, now);
-      const handedness = result.handednesses || result.handedness || [];
-      const landmarksList = result.landmarks || [];
-      this.detectedCount = landmarksList.length;
-
-      const seenKeys = new Set();
-
-      landmarksList.forEach((rawLandmarks, index) => {
-        // 1. Convert normalized MediaPipe landmarks to screen coordinates
-        const screenPoints = rawLandmarks.map(lm => this.coordinateMapper.landmarkToScreen(lm));
-        const confidence = handedness[index]?.[0]?.score ?? 0.5;
-
-        // 2. Resolve hand identity (LEFT vs RIGHT)
-        const key = this._resolveHandKey(handedness[index], screenPoints, confidence, seenKeys);
-        seenKeys.add(key);
-        const hand = this.hands[key];
-        const smoother = this.smoothers[key];
-
-        // 3. Smooth screen points using One Euro Filter
-        const smoothedScreenPoints = smoother.smoothLandmarks(screenPoints, dt);
-        hand.updateLandmarks(smoothedScreenPoints, rawLandmarks, confidence, now);
-
-        // 4. Smooth pinch distance
-        hand.pinchDistance = smoother.smoothPinchDistance(hand.rawPinchDistance, dt);
-
-        // 5. Update gestures
-        this.gestureEngine.update(hand, dt);
-      });
-
-      // Handle hands that were lost in this frame
-      ['LEFT', 'RIGHT'].forEach(key => {
-        if (!seenKeys.has(key)) {
-          const hand = this.hands[key];
-          if (now - hand.lastSeen > 350) {
-            hand.reset();
-            this.smoothers[key].reset();
-            this.gestureEngine.reset(key);
-          } else {
-            hand.pinching = false;
-            hand.pinchStarted = false;
-          }
-        }
-      });
-
-      this._frameCount++;
-      if (now - this._lastFpsTime >= 1000) {
-        this.detectionFps = Math.round((this._frameCount * 1000) / (now - this._lastFpsTime));
-        this._frameCount = 0;
-        this._lastFpsTime = now;
-      }
-    }
-
-    // Smooth intensity fade for appearance/disappearance
+    // 2. Continuous 60fps smoothing across both hands
     ['LEFT', 'RIGHT'].forEach(key => {
       const hand = this.hands[key];
-      const targetIntensity = hand.visible && (now - hand.lastSeen < 350) ? 1.0 : 0.0;
+      const target = this.rawTargets[key];
+      const smoother = this.smoothers[key];
+
+      if (target.updated && target.screenPoints.length >= 21) {
+        // Continuous smooth interpolation
+        const smoothedPts = smoother.smooth(target.screenPoints, dt);
+        hand.updateLandmarks(smoothedPts, target.rawLandmarks, target.confidence, now);
+
+        // Smooth pinch distance
+        hand.pinchDistance = smoother.smoothPinchDistance(hand.rawPinchDistance, dt);
+
+        // Update gestures
+        this.gestureEngine.update(hand, dt);
+      }
+
+      // Smooth intensity fade
+      const isFresh = hand.visible && (now - hand.lastSeen < 350);
+      const targetIntensity = isFresh ? 1.0 : 0.0;
       hand.intensity += (targetIntensity - hand.intensity) * Math.min(1.0, dt * 14.0);
     });
   }

@@ -13,49 +13,38 @@ export class ARScene {
     this.arCamera = new ARCamera();
     this.camera = this.arCamera.instance;
 
-    // High performance transparent WebGL renderer
+    // High performance transparent WebGL renderer (capped DPR at 1.5 for buttery 60 FPS)
     this.renderer = new THREE.WebGLRenderer({
       alpha: true,
       antialias: true,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.1;
     this.container.appendChild(this.renderer.domElement);
 
-    // Cinematic AR Lighting
     this._setupLighting();
-
-    // Floor and Boundary setup
     this.floorY = -2.1;
   }
 
   _setupLighting() {
-    // Sky/ground sci-fi gradient
-    const hemiLight = new THREE.HemisphereLight(0x95eaff, 0x160a2c, 2.0);
+    // Ambient sci-fi gradient fill
+    const hemiLight = new THREE.HemisphereLight(0x95eaff, 0x160a2c, 2.2);
     this.scene.add(hemiLight);
 
-    // Key directional light for reflections & specular highlights
-    const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+    // Directional key light for holographic specular sheen
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
     keyLight.position.set(3, 4, 5);
     this.scene.add(keyLight);
 
-    // Rim light from behind for silhouette glow
+    // Rim light for silhouette glow
     const rimLight = new THREE.DirectionalLight(0x00f0ff, 1.8);
     rimLight.position.set(-3, -2, -2);
     this.scene.add(rimLight);
-
-    // Warm accent light for magic shield highlights
-    const magicAccent = new THREE.PointLight(0xffaa33, 1.2, 10);
-    magicAccent.position.set(0, 1, 3);
-    this.scene.add(magicAccent);
   }
 
-  /**
-   * Computes the visible world boundaries (left, right, top, bottom) at depth Z.
-   */
   getWorldBoundsAtZ(z = 0) {
     const dist = this.camera.position.z - z;
     const vFovRad = THREE.MathUtils.degToRad(this.camera.fov);

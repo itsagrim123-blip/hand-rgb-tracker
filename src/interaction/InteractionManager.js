@@ -1,6 +1,6 @@
 /**
- * InteractionManager coordinates GrabSystem, ThrowSystem, ManipulationSystem,
- * and DrawingSystem into a unified, conflict-free interaction lifecycle.
+ * InteractionManager coordinates Grab, Throw, Dual-Hand Manipulation,
+ * and 3D Air Drawing with continuous state tracking and energy arcs.
  */
 
 import { GrabSystem } from "./GrabSystem.js";
@@ -20,25 +20,29 @@ export class InteractionManager {
     this.manipulationSystem = new ManipulationSystem(objectManager, particleSystem);
     this.drawingSystem = new DrawingSystem(scene, objectManager, particleSystem);
 
-    this.currentMode = 'IDLE'; // 'IDLE' | 'GRABBING' | 'DUAL_CONTROL' | 'DRAWING'
+    this.currentMode = 'IDLE';
   }
 
   update(leftHand, rightHand, now, dt) {
     const hands = [leftHand, rightHand].filter(h => h.visible && h.intensity > 0.1);
 
-    // 1. Air Drawing Updates
+    // 1. Air Drawing Mode
     hands.forEach(hand => {
       this.drawingSystem.update(hand, now, dt);
     });
 
     if (this.drawingSystem.isDrawing) {
       this.currentMode = 'DRAWING';
+      if (this.energySystem) {
+        this.energySystem.hideDualTether();
+        this.energySystem.hideGrabTether();
+      }
       return;
     }
 
-    // 2. Process Pinch Starts & Releases
+    // 2. Pinch Grab & Release
     hands.forEach(hand => {
-      if (hand.pinchStarted) {
+      if (hand.pinching) {
         this.grabSystem.checkGrab(hand);
       }
       if (hand.pinchEnded) {
@@ -46,27 +50,44 @@ export class InteractionManager {
       }
     });
 
-    // 3. Dual-Hand Manipulation Check
+    // 3. Dual-Hand Manipulation
     const dualResult = (leftHand.visible && rightHand.visible)
       ? this.manipulationSystem.update(leftHand, rightHand, dt)
       : null;
 
     if (dualResult) {
       this.currentMode = 'DUAL_CONTROL';
-      // Energy tether between hands through the object
       if (this.energySystem) {
         this.energySystem.renderDualTether(dualResult.pLeft, dualResult.pRight, dualResult.midpoint);
+        this.energySystem.hideGrabTether();
       }
     } else {
+      if (this.energySystem) {
+        this.energySystem.hideDualTether();
+      }
+
       // 4. Single-Hand Grab Follow
-      let anyGrabbed = false;
+      let activeGrabbed = null;
+      let grabberHand = null;
+
       hands.forEach(hand => {
         this.grabSystem.updateGrabbed(hand, dt);
-        const isHolding = this.objectManager.objects.some(obj => obj.grabbedBy.includes(hand.label));
-        if (isHolding) anyGrabbed = true;
+        const held = this.objectManager.objects.find(obj => obj.grabbedBy.length === 1 && obj.grabbedBy[0] === hand.label);
+        if (held) {
+          activeGrabbed = held;
+          grabberHand = hand;
+        }
       });
 
-      this.currentMode = anyGrabbed ? 'GRABBING' : 'IDLE';
+      if (activeGrabbed && grabberHand && this.energySystem && grabberHand.pinchPoint.world) {
+        this.currentMode = 'GRABBING';
+        this.energySystem.renderGrabTether(grabberHand.pinchPoint.world, activeGrabbed.position);
+      } else {
+        this.currentMode = 'IDLE';
+        if (this.energySystem) {
+          this.energySystem.hideGrabTether();
+        }
+      }
     }
   }
 }
